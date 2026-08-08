@@ -1,0 +1,1117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>PaperFind</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="PaperFind">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#ffffff">
+<link rel="manifest" href="data:application/manifest+json;base64,eyJuYW1lIjoiUGFwZXJGaW5kIiwic2hvcnRfbmFtZSI6IlBhcGVyRmluZCIsImRpc3BsYXkiOiJzdGFuZGFsb25lIiwiYmFja2dyb3VuZF9jb2xvciI6IiNmZmZmZmYiLCJ0aGVtZV9jb2xvciI6IiNmZmZmZmYiLCJzdGFydF91cmwiOiIuIiwib3JpZW50YXRpb24iOiJwb3J0cmFpdCJ9">
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.7.1/lib/msal-browser.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --bg2: #f4f4f6; --bg3: #e6e6ea; --text: #1c1c1e; --text2: #6b6b70;
+    --text3: #a0a0a5; --border: #e3e3e6; --accent: #4f6bff; --red: #ff3b30;
+    --green: #16794f; --tagfg: #2e7d32; --tagbg: rgba(46,125,50,0.14);
+    --active: #84cc16; --active-on: #1c1c1e; --active-dim: #5c8a10;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000; --bg2: #1c1c1e; --bg3: #131315; --text: #f5f5f7; --text2: #98989d;
+      --text3: #6b6b70; --border: #2c2c2e; --accent: #7b8fff; --red: #ff453a;
+      --green: #4ade9e; --tagfg: #4ade9e; --tagbg: rgba(74,222,158,0.14);
+      --active: #a6e22e; --active-on: #1c1c1e; --active-dim: #7ea621;
+    }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { height: 100%; overscroll-behavior: none; }
+  /* iOS ignores the manifest's own orientation:"portrait" lock for
+     home-screen web apps, so this counter-rotates the page back to
+     portrait whenever the device reports landscape — same fix PaperNote
+     uses, deliberate, not a bug. Scoped to touch-primary devices so a
+     resized PC browser window is never affected. */
+  @media screen and (orientation: landscape) and (hover: none) and (pointer: coarse) {
+    html {
+      transform: rotate(-90deg); transform-origin: left top;
+      width: 100vh; height: 100vw; overflow: hidden; position: absolute; top: 100%; left: 0;
+    }
+  }
+  body {
+    margin: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    position: fixed; inset: 0; overscroll-behavior: none;
+    padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+  }
+  .screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .screen[hidden] { display: none; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 0.5px solid var(--border); flex: 0 0 auto;
+  }
+  header h1 { font-size: 17px; font-weight: 700; margin: 0; }
+  .iconBtn {
+    background: none; border: none; color: var(--text2); cursor: pointer;
+    padding: 6px 4px; line-height: 1; display: flex; align-items: center;
+  }
+
+  /* ---------- List screen ---------- */
+  #noteList { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px 14px 4px; min-height: 0; }
+  .empty-state { color: var(--text3); font-size: 14px; padding: 60px 20px; text-align: center; }
+  .note-card {
+    background: var(--bg2); padding: 10px 12px; margin-bottom: 6px; cursor: pointer;
+  }
+  .note-filename { font-size: 15px; font-weight: 500; color: var(--text); word-break: break-word; }
+  .note-meta-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+  .note-tag {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
+    color: var(--tagfg); background: var(--tagbg); padding: 2px 7px; flex: 0 0 auto;
+  }
+  .note-type-chip {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
+    color: var(--text3); background: rgba(128,128,128,0.16); padding: 2px 7px; flex: 0 0 auto;
+  }
+  .note-path { font-size: 12px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .note-modified { font-size: 12px; color: var(--text3); margin-top: 3px; }
+  .note-modified:empty { display: none; }
+
+  #filterRow { display: flex; gap: 8px; padding: 8px 14px; flex: 0 0 auto; }
+  .filterBtn {
+    flex: 1; background: var(--active); color: var(--active-on); border: none;
+    padding: 12px 4px; font-size: 16px; font-weight: 600; cursor: pointer; position: relative;
+  }
+  .filterBtn.hasActive { background: var(--active-dim); }
+  .filterBtn.hasActive::after {
+    content: ""; position: absolute; top: 6px; right: 6px; width: 7px; height: 7px;
+    border-radius: 50%; background: #fff;
+  }
+
+  #searchRow { padding: 0 14px 8px; flex: 0 0 auto; }
+  .search-box-wrap { position: relative; }
+  #searchInput {
+    width: 100%; border: 1px solid var(--border); background: var(--bg2);
+    color: var(--text); padding: 10px 34px 10px 16px; font-size: 15px; outline: none;
+    border-radius: 999px; font-family: inherit;
+  }
+  .search-clear-btn {
+    position: absolute; top: 50%; right: 10px; transform: translateY(-50%);
+    background: none; border: none; color: var(--text3); font-size: 15px;
+    line-height: 1; padding: 4px; cursor: pointer;
+  }
+
+  #bottomRow {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 14px 10px; flex: 0 0 auto; gap: 8px;
+  }
+  #lastSyncedLabel { font-size: 12px; color: var(--text3); flex: 1; text-align: center; }
+
+  /* ---------- Preview screen ---------- */
+  #previewContent { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px; }
+  .preview-filename { font-size: 16px; font-weight: 600; color: var(--text); word-break: break-word; margin-bottom: 8px; }
+  .preview-body {
+    margin-top: 14px; min-height: 220px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: var(--bg2); border: 1px solid var(--border); padding: 20px; cursor: pointer;
+  }
+  .preview-body img.preview-thumb { max-width: 100%; max-height: 60vh; object-fit: contain; display: block; }
+  .preview-text {
+    white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 14px;
+    color: var(--text); text-align: left; align-self: stretch;
+  }
+  .preview-site-slot { display: flex; align-items: center; gap: 10px; }
+  .preview-favicon { width: 40px; height: 40px; flex: 0 0 auto; }
+  .preview-site-host { font-size: 14px; color: var(--text2); word-break: break-all; }
+  .preview-placeholder { color: var(--text3); font-size: 14px; }
+  .share-hint {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    margin-top: 12px; color: var(--accent); font-size: 13px; font-weight: 500;
+  }
+
+  /* ---------- Sheets ---------- */
+  .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 20; }
+  .sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; max-height: 78vh; z-index: 21;
+    background: var(--bg); box-shadow: 0 -4px 20px rgba(0,0,0,0.15);
+    padding: 14px 16px calc(18px + env(safe-area-inset-bottom));
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .sheet-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex: 0 0 auto; }
+  .sheet-header button { border: none; background: none; font-size: 16px; cursor: pointer; padding: 6px; color: var(--text2); }
+  .sheet-title { font-size: 15px; font-weight: 600; }
+  .sheet-header-spacer { width: 28px; display: inline-block; }
+  .sheet-body { overflow-y: auto; flex: 1 1 auto; margin: 0 -16px; padding: 0 16px; }
+  .picker-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 13px 2px; border-bottom: 0.5px solid var(--border); cursor: pointer; font-size: 15px;
+  }
+  .picker-row:last-child { border-bottom: none; }
+  .picker-row.active { color: var(--accent); font-weight: 600; }
+  .picker-row-count { color: var(--text3); font-size: 12px; }
+  .picker-empty { color: var(--text3); font-size: 14px; padding: 20px 2px; }
+
+  .sheet input[type="text"], .sheet input[type="password"] {
+    width: 100%; border: 1px solid var(--border); background: var(--bg2); color: var(--text);
+    padding: 10px; font-size: 14px; outline: none; margin-bottom: 8px; font-family: inherit;
+  }
+  /* Masks the GitHub PAT without type="password" — a real password field
+     invites Chrome/Safari to offer saving it as a site credential, which
+     then surfaces as an autofill suggestion elsewhere on the page. */
+  .masked-input { -webkit-text-security: disc; }
+  .sheet label { display: block; font-size: 13px; color: var(--text2); margin: 10px 0 4px; }
+  .sheet-note { font-size: 12px; color: var(--text3); margin-top: 6px; }
+  .btn-row { display: flex; gap: 8px; margin-top: 10px; flex: 0 0 auto; }
+  .btn-row button {
+    flex: 1; padding: 12px; border: none; font-size: 15px; font-weight: 500; cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+
+  .status-msg { font-size: 13px; padding: 10px 14px; margin: 0 14px 8px; cursor: pointer; flex: 0 0 auto; }
+  .status-msg.error { background: rgba(255,59,48,0.12); color: var(--red); }
+  .status-msg.success { background: rgba(46,158,74,0.12); color: var(--green); }
+
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- List screen -->
+<div class="screen" id="listScreen">
+  <header>
+    <h1>PaperFind</h1>
+    <button id="clearBtn" class="iconBtn" title="Clear search and filters">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+  </header>
+
+  <div class="status-msg error" id="globalStatusMsg" hidden></div>
+
+  <div id="noteList"></div>
+
+  <div id="filterRow">
+    <button class="filterBtn" id="notesBtn">Notes</button>
+    <button class="filterBtn" id="tagsBtn">Tags</button>
+    <button class="filterBtn" id="filtersBtn">Filters</button>
+  </div>
+
+  <div id="searchRow">
+    <div class="search-box-wrap">
+      <input type="text" id="searchInput" name="paperfind-search" placeholder="Search…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button class="search-clear-btn" id="searchClearBtn" title="Clear search" hidden>&#10005;</button>
+    </div>
+  </div>
+
+  <div id="bottomRow">
+    <button class="iconBtn" id="settingsBtn" title="Settings">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82A1.65 1.65 0 0 0 3 13.09H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+    <span id="lastSyncedLabel"></span>
+    <button class="iconBtn" id="refreshBtn" title="Refresh">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<!-- Preview screen -->
+<div class="screen" id="previewScreen" hidden>
+  <header>
+    <h1>PaperFind</h1>
+    <button id="previewCloseBtn" class="iconBtn" title="Back to list">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+      </svg>
+    </button>
+  </header>
+  <div id="previewContent"></div>
+</div>
+
+<div class="backdrop" id="backdrop" hidden></div>
+
+<!-- Notes picker: Untagged / Tagged -->
+<div class="sheet" id="notesSheet" hidden style="max-height:40vh;">
+  <div class="sheet-header"><span class="sheet-header-spacer"></span><span class="sheet-title">Notes</span><button id="notesSheetClose">&#10005;</button></div>
+  <div class="sheet-body" id="notesSheetBody"></div>
+</div>
+
+<!-- Tags picker -->
+<div class="sheet" id="tagsSheet" hidden>
+  <div class="sheet-header"><span class="sheet-header-spacer"></span><span class="sheet-title">Tags</span><button id="tagsSheetClose">&#10005;</button></div>
+  <div class="sheet-body" id="tagsSheetBody"></div>
+</div>
+
+<!-- Filters (file type) picker -->
+<div class="sheet" id="filtersSheet" hidden style="max-height:50vh;">
+  <div class="sheet-header"><span class="sheet-header-spacer"></span><span class="sheet-title">Filters</span><button id="filtersSheetClose">&#10005;</button></div>
+  <div class="sheet-body" id="filtersSheetBody"></div>
+</div>
+
+<!-- Settings -->
+<div class="sheet" id="settingsSheet" hidden style="max-height:70vh;">
+  <div class="sheet-header"><span class="sheet-header-spacer"></span><span class="sheet-title">Settings</span><button id="settingsSheetClose">&#10005;</button></div>
+  <div class="sheet-body">
+    <label for="azureClientId">Azure app Client ID</label>
+    <input type="text" id="azureClientId" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off">
+    <div class="sheet-note">Same Client ID PaperTrail's Azure app registration uses — PaperFind's GitHub Pages URL needs to be added as a second redirect URI there once this app is deployed.</div>
+
+    <label for="ghPat" style="margin-top:16px;">GitHub token</label>
+    <input type="text" id="ghPat" class="masked-input" placeholder="ghp_... or github_pat_..." autocomplete="off">
+    <div class="sheet-note">One token, read access to both the papertrail and papernote-data repos.</div>
+
+    <div class="btn-row"><button class="btn-primary" id="settingsSaveBtn">Save</button></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // =========================================================================
+  // Config & constants
+  // =========================================================================
+  var GRAPH_SCOPES = ["Files.Read"];
+  var LOCAL_CONFIG_KEY = "paperFindLocalConfig"; // azureClientId, gh:{pat}, lastSyncedAt
+  var DATA_CACHE_KEY = "paperFindDataCache";
+  var DATA_REPO_OWNER = "RonSIll", DATA_REPO_NAME = "papertrail", DATA_PATH = "data.json";
+  var INBOX_REPO_OWNER = "RonSIll", INBOX_REPO_NAME = "papernote-data", INBOX_DATA_PATH = "inbox.json";
+  var ACCOUNT_KEY = "personal";
+  var DRIVE_BASE_URL = "https://graph.microsoft.com/v1.0/me/drive";
+
+  var FILE_TYPE_CATEGORIES = ["Documents", "Images", "Links", "Media"];
+  var FILE_TYPE_EXTENSIONS = {
+    Documents: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md"],
+    Images: ["jpg", "jpeg", "png", "heic", "gif"],
+    Links: ["url", "lnk"],
+    Media: ["mp4", "mov", "mp3", "wav"]
+  };
+  var EXT_TO_FILE_TYPE = {};
+  Object.keys(FILE_TYPE_EXTENSIONS).forEach(function (type) {
+    FILE_TYPE_EXTENSIONS[type].forEach(function (ext) { EXT_TO_FILE_TYPE[ext] = type; });
+  });
+  var MIME_BY_EXT = {
+    pdf: "application/pdf", doc: "application/msword",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ppt: "application/vnd.ms-powerpoint", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    txt: "text/plain", md: "text/markdown", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+    heic: "image/heic", gif: "image/gif", mp4: "video/mp4", mov: "video/quicktime", mp3: "audio/mpeg", wav: "audio/wav"
+  };
+
+  // =========================================================================
+  // State
+  // =========================================================================
+  var localConfig = { azureClientId: "", gh: null, lastSyncedAt: null };
+  var notesData = []; // real notes for the personal account, folder-notes already excluded
+  var untaggedEntries = [];
+  var msalApp = null;
+  var msalInitPromise = null;
+  var searchState = { text: "", tag: null, fileType: null, notesFilter: null }; // notesFilter: null | "tagged" | "untagged"
+  var currentPreviewItem = null;
+  var previewRequestSeq = 0;
+  var untaggedBlobCache = {}; // entry.id -> data: URL, in-memory only
+
+  // =========================================================================
+  // DOM refs
+  // =========================================================================
+  var el = {};
+  function cacheEls() {
+    [
+      "listScreen", "previewScreen", "clearBtn", "globalStatusMsg", "noteList",
+      "notesBtn", "tagsBtn", "filtersBtn", "searchInput", "searchClearBtn",
+      "settingsBtn", "refreshBtn", "lastSyncedLabel",
+      "previewCloseBtn", "previewContent",
+      "backdrop",
+      "notesSheet", "notesSheetClose", "notesSheetBody",
+      "tagsSheet", "tagsSheetClose", "tagsSheetBody",
+      "filtersSheet", "filtersSheetClose", "filtersSheetBody",
+      "settingsSheet", "settingsSheetClose", "azureClientId", "ghPat", "settingsSaveBtn"
+    ].forEach(function (id) { el[id] = document.getElementById(id); });
+  }
+
+  var ALL_SHEETS = ["notesSheet", "tagsSheet", "filtersSheet", "settingsSheet"];
+  function openSheet(id) { el.backdrop.hidden = false; el[id].hidden = false; }
+  function closeSheet(id) {
+    el[id].hidden = true;
+    var anyOpen = ALL_SHEETS.some(function (s) { return !el[s].hidden; });
+    if (!anyOpen) el.backdrop.hidden = true;
+  }
+  function closeAllSheets() {
+    ALL_SHEETS.forEach(function (s) { el[s].hidden = true; });
+    el.backdrop.hidden = true;
+  }
+
+  // =========================================================================
+  // Local persistence
+  // =========================================================================
+  function loadLocalConfig() {
+    try {
+      var raw = localStorage.getItem(LOCAL_CONFIG_KEY);
+      if (raw) localConfig = JSON.parse(raw);
+    } catch (e) { /* keep defaults */ }
+  }
+  function saveLocalConfig() { localStorage.setItem(LOCAL_CONFIG_KEY, JSON.stringify(localConfig)); }
+
+  function loadDataCache() {
+    try {
+      var raw = localStorage.getItem(DATA_CACHE_KEY);
+      if (!raw) return;
+      var cached = JSON.parse(raw);
+      notesData = cached.notes || [];
+      untaggedEntries = cached.untagged || [];
+    } catch (e) { /* ignore */ }
+  }
+  function saveDataCache() {
+    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({ notes: notesData, untagged: untaggedEntries }));
+  }
+
+  // =========================================================================
+  // Status banner
+  // =========================================================================
+  function showStatus(text, type) {
+    el.globalStatusMsg.className = "status-msg " + (type || "error");
+    el.globalStatusMsg.textContent = text + " (tap to dismiss)";
+    el.globalStatusMsg.hidden = false;
+  }
+  function hideStatus() { el.globalStatusMsg.hidden = true; }
+
+  // =========================================================================
+  // GitHub reads — Contents API with a Git Blobs API fallback past the
+  // ~1MB inline-content ceiling, same pattern PaperTrail itself uses for
+  // both data.json and its own read of papernote-data/inbox.json.
+  // =========================================================================
+  function b64decode(str) { return decodeURIComponent(escape(atob(str))); }
+
+  function ghGetFile(owner, repo, path, cb) {
+    if (!localConfig.gh || !localConfig.gh.pat) { cb(new Error("no-token")); return; }
+    var headers = { Authorization: "token " + localConfig.gh.pat };
+    var url = "https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path;
+    fetch(url, { headers: headers })
+      .then(function (res) {
+        if (res.status === 404) return null;
+        if (res.status === 401) throw new Error("GitHub token looks invalid or expired — check it under Settings.");
+        if (!res.ok) throw new Error("Couldn't reach " + owner + "/" + repo + " right now — try again in a moment.");
+        return res.json();
+      })
+      .then(function (json) {
+        if (!json) return null;
+        if (json.content) return json.content;
+        var blobUrl = "https://api.github.com/repos/" + owner + "/" + repo + "/git/blobs/" + json.sha;
+        return fetch(blobUrl, { headers: headers }).then(function (res2) {
+          if (!res2.ok) throw new Error("Couldn't reach " + owner + "/" + repo + " right now — try again in a moment.");
+          return res2.json();
+        }).then(function (blob) { return blob.content; });
+      })
+      .then(function (content) {
+        cb(null, content ? b64decode(content.replace(/\n/g, "")) : null);
+      })
+      .catch(function (err) { cb(err); });
+  }
+
+  function loadNotesData(cb) {
+    ghGetFile(DATA_REPO_OWNER, DATA_REPO_NAME, DATA_PATH, function (err, raw) {
+      if (err) { cb(err); return; }
+      if (!raw) { notesData = []; cb(null); return; }
+      try {
+        var parsed = JSON.parse(raw);
+        var acctData = parsed[ACCOUNT_KEY];
+        var notes = (acctData && Array.isArray(acctData.notes)) ? acctData.notes : [];
+        // Folder-notes are excluded from PaperFind entirely (2026-08-08 design decision).
+        notesData = notes.filter(function (n) { return n.type !== "folder"; });
+        cb(null);
+      } catch (e) { cb(new Error("PaperTrail's data.json looks damaged — couldn't read it.")); }
+    });
+  }
+
+  function loadUntaggedData(cb) {
+    ghGetFile(INBOX_REPO_OWNER, INBOX_REPO_NAME, INBOX_DATA_PATH, function (err, raw) {
+      if (err) { cb(err); return; }
+      if (!raw) { untaggedEntries = []; cb(null); return; }
+      try {
+        var parsed = JSON.parse(raw);
+        var entries = (parsed && Array.isArray(parsed.entries)) ? parsed.entries : [];
+        entries.forEach(function (e) { e._isUntagged = true; });
+        untaggedEntries = entries;
+        cb(null);
+      } catch (e) { cb(new Error("PaperNote's inbox.json looks damaged — couldn't read it.")); }
+    });
+  }
+
+  function refresh() {
+    if (!localConfig.gh || !localConfig.gh.pat) { openSettings(); return; }
+    hideStatus();
+    var notesErr = null, untaggedErr = null;
+    var pending = 2;
+    function done() {
+      pending--;
+      if (pending > 0) return;
+      saveDataCache();
+      if (notesErr) showStatus("Notes: " + notesErr.message, "error");
+      else if (untaggedErr) showStatus("Untagged: " + untaggedErr.message, "error");
+      else {
+        localConfig.lastSyncedAt = new Date().toISOString();
+        saveLocalConfig();
+      }
+      renderLastSynced();
+      renderList();
+    }
+    loadNotesData(function (err) { notesErr = err; done(); });
+    loadUntaggedData(function (err) { untaggedErr = err; done(); });
+  }
+
+  function renderLastSynced() {
+    if (!localConfig.lastSyncedAt) { el.lastSyncedLabel.textContent = ""; return; }
+    var d = new Date(localConfig.lastSyncedAt);
+    var sameDay = d.toDateString() === new Date().toDateString();
+    var time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    el.lastSyncedLabel.textContent = "Last synced " + (sameDay ? time : d.toLocaleDateString() + " " + time);
+  }
+
+  // =========================================================================
+  // Search / filters
+  // =========================================================================
+  function searchWords() {
+    var text = searchState.text.trim().toLowerCase();
+    var words = [];
+    var re = /"([^"]*)"|(\S+)/g;
+    var m;
+    while ((m = re.exec(text))) {
+      var token = (m[1] !== undefined ? m[1] : m[2]).trim();
+      if (token) words.push(token);
+    }
+    return words;
+  }
+  function matchesSearchWords(filename, words) {
+    if (!words.length) return true;
+    var lower = (filename || "").toLowerCase();
+    return words.every(function (w) { return lower.indexOf(w) !== -1; });
+  }
+  function noteFileType(note) {
+    var m = /\.([a-z0-9]+)$/i.exec(note.filename);
+    return m ? (EXT_TO_FILE_TYPE[m[1].toLowerCase()] || null) : null;
+  }
+  function untaggedFileType(entry) {
+    if (entry.type === "photo") return "Images";
+    return "Documents"; // "document" and the "text" fallback both land here
+  }
+  // Shared predicate for the main list and every picker sheet's counts.
+  // opts lets a sheet compute a row's count as "how many would match if I
+  // picked this row" rather than "how many match right now" — e.g. the
+  // Filters sheet must skip its own fileType dimension when counting each
+  // category, or every category but the currently active one would show 0.
+  function baseFilterMatch(item, words, opts) {
+    opts = opts || {};
+    if (!matchesSearchWords(item.filename, words)) return false;
+    if (!opts.skipTag && searchState.tag && item.tag !== searchState.tag) return false;
+    if (!opts.skipFileType && searchState.fileType) {
+      var type = item._isUntagged ? untaggedFileType(item) : noteFileType(item);
+      if (type !== searchState.fileType) return false;
+    }
+    if (!opts.skipNotesFilter) {
+      if (searchState.notesFilter === "tagged" && item._isUntagged) return false;
+      if (searchState.notesFilter === "untagged" && !item._isUntagged) return false;
+    }
+    return true;
+  }
+  function visibleItems() {
+    var words = searchWords();
+    var items = notesData.concat(untaggedEntries).filter(function (item) { return baseFilterMatch(item, words); });
+    // Fixed sort order only, per the 2026-08-08 design decision: newest added first.
+    items.sort(function (a, b) { return new Date(b.capturedAt || 0) - new Date(a.capturedAt || 0); });
+    return items;
+  }
+
+  // =========================================================================
+  // List rendering
+  // =========================================================================
+  function formatMDY(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    var mm = String(d.getMonth() + 1).padStart(2, "0");
+    var dd = String(d.getDate()).padStart(2, "0");
+    return mm + "/" + dd + "/" + String(d.getFullYear()).slice(2);
+  }
+
+  function renderList() {
+    el.noteList.innerHTML = "";
+    var items = visibleItems();
+    if (!items.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = (notesData.length + untaggedEntries.length) === 0
+        ? "No notes yet. Tap refresh to pull the latest from PaperTrail."
+        : "No notes match your search and filters.";
+      el.noteList.appendChild(empty);
+    } else {
+      items.forEach(function (item) {
+        el.noteList.appendChild(item._isUntagged ? buildUntaggedCard(item) : buildNoteCard(item));
+      });
+    }
+    renderFilterButtonStates();
+  }
+
+  function buildNoteCard(note) {
+    var card = document.createElement("div");
+    card.className = "note-card";
+
+    var filename = document.createElement("div");
+    filename.className = "note-filename";
+    filename.textContent = note.filename;
+    card.appendChild(filename);
+
+    var metaRow = document.createElement("div");
+    metaRow.className = "note-meta-row";
+    var tag = document.createElement("span");
+    tag.className = "note-tag";
+    tag.textContent = note.tag || "";
+    metaRow.appendChild(tag);
+    var path = document.createElement("span");
+    path.className = "note-path";
+    path.textContent = note.folderPath || "";
+    metaRow.appendChild(path);
+    card.appendChild(metaRow);
+
+    var modified = document.createElement("div");
+    modified.className = "note-modified";
+    modified.textContent = note.modifiedAt ? ("Modified: " + formatMDY(note.modifiedAt)) : "";
+    card.appendChild(modified);
+
+    card.addEventListener("click", function () { openPreview(note); });
+    return card;
+  }
+
+  function buildUntaggedCard(entry) {
+    var card = document.createElement("div");
+    card.className = "note-card";
+
+    var filename = document.createElement("div");
+    filename.className = "note-filename";
+    filename.textContent = entry.filename || "(untitled)";
+    card.appendChild(filename);
+
+    var metaRow = document.createElement("div");
+    metaRow.className = "note-meta-row";
+    var untaggedChip = document.createElement("span");
+    untaggedChip.className = "note-type-chip";
+    untaggedChip.textContent = "Untagged";
+    metaRow.appendChild(untaggedChip);
+    var typeChip = document.createElement("span");
+    typeChip.className = "note-type-chip";
+    typeChip.textContent = entry.type === "photo" ? "Photo" : entry.type === "document" ? "Document" : "Text";
+    metaRow.appendChild(typeChip);
+    card.appendChild(metaRow);
+
+    var captured = document.createElement("div");
+    captured.className = "note-modified";
+    captured.textContent = entry.capturedAt ? ("Captured: " + formatMDY(entry.capturedAt)) : "";
+    card.appendChild(captured);
+
+    card.addEventListener("click", function () { openPreview(entry); });
+    return card;
+  }
+
+  function renderFilterButtonStates() {
+    el.notesBtn.classList.toggle("hasActive", !!searchState.notesFilter);
+    el.tagsBtn.classList.toggle("hasActive", !!searchState.tag);
+    el.filtersBtn.classList.toggle("hasActive", !!searchState.fileType);
+  }
+
+  // =========================================================================
+  // Picker sheets
+  // =========================================================================
+  function buildPickerRow(label, count, isActive, onClick) {
+    var row = document.createElement("div");
+    row.className = "picker-row" + (isActive ? " active" : "");
+    var labelSpan = document.createElement("span");
+    labelSpan.textContent = label;
+    row.appendChild(labelSpan);
+    var countSpan = document.createElement("span");
+    countSpan.className = "picker-row-count";
+    countSpan.textContent = count;
+    row.appendChild(countSpan);
+    row.addEventListener("click", onClick);
+    return row;
+  }
+
+  function renderNotesSheet() {
+    el.notesSheetBody.innerHTML = "";
+    var words = searchWords();
+    var taggedCount = 0, untaggedCount = 0;
+    notesData.concat(untaggedEntries).forEach(function (item) {
+      if (!baseFilterMatch(item, words, { skipNotesFilter: true })) return;
+      if (item._isUntagged) untaggedCount++; else taggedCount++;
+    });
+    el.notesSheetBody.appendChild(buildPickerRow("Tagged", taggedCount, searchState.notesFilter === "tagged", function () {
+      searchState.notesFilter = searchState.notesFilter === "tagged" ? null : "tagged";
+      closeSheet("notesSheet");
+      renderList();
+    }));
+    el.notesSheetBody.appendChild(buildPickerRow("Untagged", untaggedCount, searchState.notesFilter === "untagged", function () {
+      searchState.notesFilter = searchState.notesFilter === "untagged" ? null : "untagged";
+      closeSheet("notesSheet");
+      renderList();
+    }));
+  }
+
+  function renderTagsSheet() {
+    el.tagsSheetBody.innerHTML = "";
+    var words = searchWords();
+    var counts = {};
+    notesData.forEach(function (n) {
+      if (!baseFilterMatch(n, words, { skipTag: true })) return;
+      if (!n.tag) return;
+      counts[n.tag] = (counts[n.tag] || 0) + 1;
+    });
+    var tags = Object.keys(counts).sort(function (a, b) { return a.localeCompare(b, undefined, { sensitivity: "base" }); });
+    if (!tags.length) {
+      var empty = document.createElement("div");
+      empty.className = "picker-empty";
+      empty.textContent = "No tags to show.";
+      el.tagsSheetBody.appendChild(empty);
+      return;
+    }
+    tags.forEach(function (tagName) {
+      el.tagsSheetBody.appendChild(buildPickerRow(tagName, counts[tagName], searchState.tag === tagName, function () {
+        searchState.tag = searchState.tag === tagName ? null : tagName;
+        closeSheet("tagsSheet");
+        renderList();
+      }));
+    });
+  }
+
+  function renderFiltersSheet() {
+    el.filtersSheetBody.innerHTML = "";
+    var words = searchWords();
+    FILE_TYPE_CATEGORIES.forEach(function (type) {
+      var count = 0;
+      notesData.concat(untaggedEntries).forEach(function (item) {
+        if (!baseFilterMatch(item, words, { skipFileType: true })) return;
+        var itemType = item._isUntagged ? untaggedFileType(item) : noteFileType(item);
+        if (itemType === type) count++;
+      });
+      el.filtersSheetBody.appendChild(buildPickerRow(type, count, searchState.fileType === type, function () {
+        searchState.fileType = searchState.fileType === type ? null : type;
+        closeSheet("filtersSheet");
+        renderList();
+      }));
+    });
+  }
+
+  // =========================================================================
+  // MSAL / Graph — only needed live for preview content (thumbnails, text,
+  // link resolution). PaperFind never writes to OneDrive and never runs its
+  // own sync; data.json already has everything the list screen needs.
+  // =========================================================================
+  function initMsal() {
+    if (!localConfig.azureClientId) return Promise.resolve(null);
+    if (msalInitPromise) return msalInitPromise;
+    msalApp = new msal.PublicClientApplication({
+      auth: {
+        clientId: localConfig.azureClientId,
+        authority: "https://login.microsoftonline.com/common",
+        redirectUri: window.location.href
+      },
+      cache: { cacheLocation: "localStorage" }
+    });
+    msalInitPromise = msalApp.initialize().then(function () { return msalApp; });
+    return msalInitPromise;
+  }
+
+  // Popups are the same pattern PaperTrail/PaperNote use, but PaperFind
+  // runs as an installed iPhone home-screen app (standalone display mode)
+  // far more often than PaperTrail does — Safari's standalone PWA container
+  // is known to handle window.open popups less reliably than a normal
+  // browser tab. If sign-in silently fails to complete in standalone mode,
+  // this is the first place to look; a redirect-based flow
+  // (loginRedirect/acquireTokenRedirect) is the fallback if so.
+  function getGraphToken() {
+    return initMsal().then(function (app) {
+      if (!app) return Promise.reject(new Error("Set an Azure app Client ID under Settings first."));
+      var accounts = app.getAllAccounts();
+      var account = accounts[0];
+      if (account) {
+        return app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: account }).then(function (r) {
+          return r.accessToken;
+        }).catch(function () {
+          return app.acquireTokenPopup({ scopes: GRAPH_SCOPES }).then(function (r) { return r.accessToken; });
+        });
+      }
+      return app.loginPopup({ scopes: GRAPH_SCOPES }).then(function (r) { return r.accessToken; });
+    });
+  }
+
+  function graphFetch(url, token) {
+    return fetch(url, { headers: { Authorization: "Bearer " + token } }).then(function (res) {
+      if (!res.ok) throw new Error("Graph request failed: " + res.status);
+      return res.json();
+    });
+  }
+
+  function fetchFileText(itemId, token) {
+    var metaUrl = DRIVE_BASE_URL + "/items/" + itemId + "?$select=%40microsoft.graph.downloadUrl";
+    return graphFetch(metaUrl, token).then(function (meta) {
+      var downloadUrl = meta["@microsoft.graph.downloadUrl"];
+      if (!downloadUrl) throw new Error("no download URL");
+      return fetch(downloadUrl).then(function (res) {
+        if (!res.ok) throw new Error("content fetch failed");
+        return res.text();
+      });
+    });
+  }
+  function fetchFileArrayBuffer(itemId, token) {
+    var metaUrl = DRIVE_BASE_URL + "/items/" + itemId + "?$select=%40microsoft.graph.downloadUrl";
+    return graphFetch(metaUrl, token).then(function (meta) {
+      var downloadUrl = meta["@microsoft.graph.downloadUrl"];
+      if (!downloadUrl) throw new Error("no download URL");
+      return fetch(downloadUrl).then(function (res) {
+        if (!res.ok) throw new Error("content fetch failed");
+        return res.arrayBuffer();
+      });
+    });
+  }
+  function fetchUrlShortcutTarget(itemId, token) {
+    return fetchFileText(itemId, token).then(function (text) {
+      var match = text.match(/^URL=(.+)$/im);
+      if (!match) throw new Error("no URL= line found");
+      return match[1].trim();
+    });
+  }
+  // Windows .lnk files are a proprietary binary format — rather than
+  // implementing the full spec just to find a target, decode the bytes as
+  // UTF-16LE (how Windows stores a shortcut's target string) and scan for
+  // an http(s) address, same approach PaperTrail itself uses.
+  function extractUrlFromLnkBytes(buffer) {
+    var bytes = new Uint8Array(buffer);
+    var chars = [];
+    for (var i = 0; i + 1 < bytes.length; i += 2) {
+      var code = bytes[i] | (bytes[i + 1] << 8);
+      chars.push(code >= 32 && code < 0x2000 ? String.fromCharCode(code) : " ");
+    }
+    var match = chars.join("").match(/https?:\/\/[^\s"'<>]+/i);
+    return match ? match[0] : null;
+  }
+  function resolveLnkUrl(itemId, token) {
+    return fetchFileArrayBuffer(itemId, token).then(extractUrlFromLnkBytes);
+  }
+
+  function isLinkNote(note) {
+    return /\.url$/i.test(note.filename) || /\.lnk$/i.test(note.filename);
+  }
+  function mimeForFilename(name) {
+    var m = /\.([a-z0-9]+)$/i.exec(name || "");
+    var ext = m ? m[1].toLowerCase() : "";
+    return MIME_BY_EXT[ext] || "application/octet-stream";
+  }
+  function dataUrlToFile(dataUrl, filename, mimeType) {
+    var parts = dataUrl.split(",");
+    var byteStr = atob(parts[1]);
+    var bytes = new Uint8Array(byteStr.length);
+    for (var i = 0; i < byteStr.length; i++) bytes[i] = byteStr.charCodeAt(i);
+    return new File([bytes], filename, { type: mimeType || "application/octet-stream" });
+  }
+
+  // =========================================================================
+  // Preview screen
+  // =========================================================================
+  function openPreview(item) {
+    currentPreviewItem = item;
+    el.listScreen.hidden = true;
+    el.previewScreen.hidden = false;
+    renderPreviewContent(item);
+  }
+  function closePreview() {
+    currentPreviewItem = null;
+    el.previewScreen.hidden = true;
+    el.listScreen.hidden = false;
+  }
+
+  function buildShareHint() {
+    var hint = document.createElement("div");
+    hint.className = "share-hint";
+    hint.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> Tap to share';
+    return hint;
+  }
+
+  function renderPreviewContent(item) {
+    el.previewContent.innerHTML = "";
+    var mySeq = ++previewRequestSeq;
+
+    var filename = document.createElement("div");
+    filename.className = "preview-filename";
+    filename.textContent = item.filename || "(untitled)";
+    el.previewContent.appendChild(filename);
+
+    var metaRow = document.createElement("div");
+    metaRow.className = "note-meta-row";
+    if (item._isUntagged) {
+      var untaggedChip = document.createElement("span");
+      untaggedChip.className = "note-type-chip";
+      untaggedChip.textContent = "Untagged";
+      metaRow.appendChild(untaggedChip);
+    } else {
+      var tag = document.createElement("span");
+      tag.className = "note-tag";
+      tag.textContent = item.tag || "";
+      metaRow.appendChild(tag);
+      var path = document.createElement("span");
+      path.className = "note-path";
+      path.textContent = item.folderPath || "";
+      metaRow.appendChild(path);
+    }
+    el.previewContent.appendChild(metaRow);
+
+    var body = document.createElement("div");
+    body.className = "preview-body";
+    body.textContent = "Loading preview…";
+    body.addEventListener("click", function () { handlePreviewTap(item); });
+    el.previewContent.appendChild(body);
+    el.previewContent.appendChild(buildShareHint());
+
+    function setBody(node) {
+      if (mySeq !== previewRequestSeq) return;
+      body.innerHTML = "";
+      body.appendChild(node);
+    }
+    function setPlaceholder(text) {
+      if (mySeq !== previewRequestSeq) return;
+      var p = document.createElement("div");
+      p.className = "preview-placeholder";
+      p.textContent = text;
+      setBody(p);
+    }
+
+    if (item._isUntagged) {
+      renderUntaggedPreviewBody(item, setBody, setPlaceholder);
+      return;
+    }
+
+    if (isLinkNote(item)) {
+      getGraphToken().then(function (token) {
+        return /\.lnk$/i.test(item.filename) ? resolveLnkUrl(item.driveItemId, token) : fetchUrlShortcutTarget(item.driveItemId, token);
+      }).then(function (targetUrl) {
+        item._resolvedTargetUrl = targetUrl;
+        if (!targetUrl) { setPlaceholder("No preview available for this file type."); return; }
+        var slot = document.createElement("div");
+        slot.className = "preview-site-slot";
+        var hostname;
+        try { hostname = new URL(targetUrl).hostname; } catch (e) { hostname = targetUrl; }
+        var favicon = document.createElement("img");
+        favicon.className = "preview-favicon";
+        favicon.alt = "";
+        favicon.src = "https://www.google.com/s2/favicons?sz=64&domain=" + encodeURIComponent(hostname);
+        slot.appendChild(favicon);
+        var host = document.createElement("div");
+        host.className = "preview-site-host";
+        host.textContent = hostname;
+        slot.appendChild(host);
+        setBody(slot);
+      }).catch(function () { setPlaceholder("Couldn't load a preview for this link."); });
+      return;
+    }
+
+    if (/\.(md|txt)$/i.test(item.filename)) {
+      getGraphToken().then(function (token) { return fetchFileText(item.driveItemId, token); })
+        .then(function (text) {
+          var pre = document.createElement("pre");
+          pre.className = "preview-text";
+          pre.textContent = text;
+          setBody(pre);
+        }).catch(function () { setPlaceholder("Couldn't load a preview for this file."); });
+      return;
+    }
+
+    getGraphToken().then(function (token) {
+      var url = DRIVE_BASE_URL + "/items/" + item.driveItemId + "/thumbnails";
+      return graphFetch(url, token);
+    }).then(function (result) {
+      var set = result.value && result.value[0];
+      var img = set && (set.large || set.medium || set.small);
+      if (!img) { setPlaceholder("No preview available for this file type."); return; }
+      var imgEl = document.createElement("img");
+      imgEl.className = "preview-thumb";
+      imgEl.src = img.url;
+      imgEl.alt = item.filename;
+      setBody(imgEl);
+    }).catch(function () { setPlaceholder("Couldn't load a preview for this file."); });
+  }
+
+  function fetchUntaggedBlobDataUrl(entry) {
+    if (untaggedBlobCache[entry.id]) return Promise.resolve(untaggedBlobCache[entry.id]);
+    if (!entry.blobPath || !localConfig.gh || !localConfig.gh.pat) return Promise.reject(new Error("no blob path on this entry"));
+    var headers = { Authorization: "token " + localConfig.gh.pat };
+    var contentsUrl = "https://api.github.com/repos/" + INBOX_REPO_OWNER + "/" + INBOX_REPO_NAME + "/contents/" + entry.blobPath;
+    return fetch(contentsUrl, { headers: headers })
+      .then(function (res) { if (!res.ok) throw new Error("couldn't resolve this photo's blob"); return res.json(); })
+      .then(function (meta) {
+        var blobUrl = "https://api.github.com/repos/" + INBOX_REPO_OWNER + "/" + INBOX_REPO_NAME + "/git/blobs/" + meta.sha;
+        return fetch(blobUrl, { headers: headers });
+      })
+      .then(function (res) { if (!res.ok) throw new Error("couldn't fetch this photo's content"); return res.json(); })
+      .then(function (blob) {
+        var dataUrl = "data:" + (entry.mimeType || "application/octet-stream") + ";base64," + blob.content.replace(/\n/g, "");
+        untaggedBlobCache[entry.id] = dataUrl;
+        return dataUrl;
+      });
+  }
+
+  function renderUntaggedPreviewBody(entry, setBody, setPlaceholder) {
+    if (entry.type === "text") {
+      var pre = document.createElement("pre");
+      pre.className = "preview-text";
+      pre.textContent = entry.textContent || "";
+      setBody(pre);
+      return;
+    }
+    if (entry.type === "photo") {
+      fetchUntaggedBlobDataUrl(entry).then(function (dataUrl) {
+        var img = document.createElement("img");
+        img.className = "preview-thumb";
+        img.src = dataUrl;
+        img.alt = entry.filename;
+        setBody(img);
+      }).catch(function () { setPlaceholder("Couldn't load a preview for this photo."); });
+      return;
+    }
+    setPlaceholder("No preview available for this file type.");
+  }
+
+  // =========================================================================
+  // Tap-to-share — the whole preview body is one tap target. Shares the
+  // real file bytes (so the iOS share sheet offers Save/Print/Copy, not
+  // just "copy link"); falls back to opening the source directly if the
+  // Web Share API isn't available or the share fails for a reason other
+  // than the user simply cancelling.
+  // =========================================================================
+  function handlePreviewTap(item) {
+    var task;
+    if (item._isUntagged) {
+      task = shareUntaggedEntry(item);
+    } else if (isLinkNote(item)) {
+      task = shareLinkNote(item);
+    } else {
+      task = shareRealNoteFile(item);
+    }
+    task.catch(function (err) {
+      if (err && err.name === "AbortError") return; // user cancelled the share sheet
+      var fallbackUrl = item._isUntagged ? null : (item._resolvedTargetUrl || item.webUrl);
+      if (fallbackUrl) window.open(fallbackUrl, "_blank", "noopener");
+      else showStatus("Couldn't share this item.", "error");
+    });
+  }
+
+  function shareRealNoteFile(note) {
+    return getGraphToken().then(function (token) { return fetchFileArrayBuffer(note.driveItemId, token); })
+      .then(function (buf) {
+        var file = new File([buf], note.filename, { type: mimeForFilename(note.filename) });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          return navigator.share({ files: [file], title: note.filename });
+        }
+        throw new Error("share-files-unsupported");
+      });
+  }
+  function shareLinkNote(note) {
+    var url = note._resolvedTargetUrl || note.webUrl;
+    if (navigator.share) return navigator.share({ url: url, title: note.filename });
+    return Promise.reject(new Error("share-unsupported"));
+  }
+  function shareUntaggedEntry(entry) {
+    if (entry.type === "text") {
+      if (navigator.share) return navigator.share({ text: entry.textContent || "", title: entry.filename });
+      return Promise.reject(new Error("share-unsupported"));
+    }
+    return fetchUntaggedBlobDataUrl(entry).then(function (dataUrl) {
+      return dataUrlToFile(dataUrl, entry.filename, entry.mimeType);
+    }).then(function (file) {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        return navigator.share({ files: [file], title: entry.filename });
+      }
+      throw new Error("share-files-unsupported");
+    });
+  }
+
+  // =========================================================================
+  // Settings
+  // =========================================================================
+  function openSettings() {
+    el.azureClientId.value = localConfig.azureClientId || "";
+    el.ghPat.value = (localConfig.gh && localConfig.gh.pat) || "";
+    openSheet("settingsSheet");
+  }
+
+  // =========================================================================
+  // Wiring
+  // =========================================================================
+  function wireEvents() {
+    el.clearBtn.addEventListener("click", function () {
+      searchState = { text: "", tag: null, fileType: null, notesFilter: null };
+      el.searchInput.value = "";
+      el.searchClearBtn.hidden = true;
+      renderList();
+    });
+
+    el.notesBtn.addEventListener("click", function () { renderNotesSheet(); openSheet("notesSheet"); });
+    el.tagsBtn.addEventListener("click", function () { renderTagsSheet(); openSheet("tagsSheet"); });
+    el.filtersBtn.addEventListener("click", function () { renderFiltersSheet(); openSheet("filtersSheet"); });
+    el.notesSheetClose.addEventListener("click", function () { closeSheet("notesSheet"); });
+    el.tagsSheetClose.addEventListener("click", function () { closeSheet("tagsSheet"); });
+    el.filtersSheetClose.addEventListener("click", function () { closeSheet("filtersSheet"); });
+    el.backdrop.addEventListener("click", closeAllSheets);
+
+    el.searchInput.addEventListener("input", function () {
+      searchState.text = el.searchInput.value;
+      el.searchClearBtn.hidden = !searchState.text;
+      renderList();
+    });
+    el.searchClearBtn.addEventListener("click", function () {
+      searchState.text = "";
+      el.searchInput.value = "";
+      el.searchClearBtn.hidden = true;
+      renderList();
+    });
+
+    el.settingsBtn.addEventListener("click", openSettings);
+    el.settingsSheetClose.addEventListener("click", function () { closeSheet("settingsSheet"); });
+    el.settingsSaveBtn.addEventListener("click", function () {
+      var clientId = el.azureClientId.value.trim();
+      var pat = el.ghPat.value.trim();
+      if (!pat) { showStatus("A GitHub token is required.", "error"); return; }
+      localConfig.azureClientId = clientId;
+      localConfig.gh = { pat: pat };
+      saveLocalConfig();
+      closeSheet("settingsSheet");
+      refresh();
+    });
+
+    el.refreshBtn.addEventListener("click", refresh);
+    el.previewCloseBtn.addEventListener("click", closePreview);
+    el.globalStatusMsg.addEventListener("click", hideStatus);
+  }
+
+  // =========================================================================
+  // Boot
+  // =========================================================================
+  cacheEls();
+  loadLocalConfig();
+  loadDataCache();
+  wireEvents();
+  renderLastSynced();
+  renderList();
+  if (!localConfig.gh || !localConfig.gh.pat) {
+    openSettings();
+  } else {
+    refresh();
+  }
+})();
+</script>
+</body>
+</html>
