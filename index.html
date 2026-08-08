@@ -546,8 +546,24 @@
     return mm + "/" + dd + "/" + String(d.getFullYear()).slice(2);
   }
 
+  // Nothing shows until there's a real search or an active tag/filter —
+  // Ron's call, 2026-08-08: the opening state (and the state reached by
+  // clearing back to it) should be blank, not the full note list dumped
+  // out unfiltered.
+  function hasActiveCriteria() {
+    return !!(searchState.text.trim() || searchState.tag || searchState.fileType);
+  }
+
   function renderList() {
     el.noteList.innerHTML = "";
+    if (!hasActiveCriteria()) {
+      var prompt = document.createElement("div");
+      prompt.className = "empty-state";
+      prompt.textContent = "Search, or pick a tag or filter, to see notes.";
+      el.noteList.appendChild(prompt);
+      renderFilterButtonStates();
+      return;
+    }
     var items = visibleItems();
     if (!items.length) {
       var empty = document.createElement("div");
