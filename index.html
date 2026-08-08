@@ -266,7 +266,7 @@
 
     <label for="ghPat" style="margin-top:16px;">GitHub token</label>
     <input type="text" id="ghPat" class="masked-input" placeholder="ghp_... or github_pat_..." autocomplete="off">
-    <div class="sheet-note">One token, read access to both the papertrail and papernote-data repos.</div>
+    <div class="sheet-note">One token, read access to both the papertrail-data and papernote-data repos. If this is a fine-grained token, each repo needs to be explicitly granted — a token that only lists papernote-data will show Untagged notes but no real notes.</div>
 
     <div class="btn-row"><button class="btn-primary" id="settingsSaveBtn">Save</button></div>
   </div>
@@ -391,14 +391,29 @@
   // =========================================================================
   function b64decode(str) { return decodeURIComponent(escape(atob(str))); }
 
+  // Checks repo-level access FIRST, before the file itself — a fine-grained
+  // GitHub token that was never granted access to a repo gets a 404 on the
+  // file too, deliberately indistinguishable from "file doesn't exist"
+  // (GitHub does this on purpose so an unauthorized token can't even
+  // confirm a private repo exists). Without this check, a token missing
+  // access to one of PaperFind's two source repos silently looks identical
+  // to that repo's file genuinely being empty — same failure mode PaperTrail
+  // itself hit and fixed for its own read of papernote-data/inbox.json.
   function ghGetFile(owner, repo, path, cb) {
     if (!localConfig.gh || !localConfig.gh.pat) { cb(new Error("no-token")); return; }
     var headers = { Authorization: "token " + localConfig.gh.pat };
-    var url = "https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path;
-    fetch(url, { headers: headers })
+    fetch("https://api.github.com/repos/" + owner + "/" + repo, { headers: headers })
       .then(function (res) {
-        if (res.status === 404) return null;
+        if (res.ok) return;
         if (res.status === 401) throw new Error("GitHub token looks invalid or expired — check it under Settings.");
+        throw new Error("Your GitHub token doesn't have access to " + owner + "/" + repo + " — check its repository access on GitHub, or the token entered under Settings.");
+      })
+      .then(function () {
+        var url = "https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path;
+        return fetch(url, { headers: headers });
+      })
+      .then(function (res) {
+        if (res.status === 404) return null; // repo access already confirmed above — a genuinely missing file
         if (!res.ok) throw new Error("Couldn't reach " + owner + "/" + repo + " right now — try again in a moment.");
         return res.json();
       })
