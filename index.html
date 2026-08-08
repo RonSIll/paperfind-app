@@ -197,7 +197,6 @@
   <div id="noteList"></div>
 
   <div id="filterRow">
-    <button class="filterBtn" id="notesBtn">Notes</button>
     <button class="filterBtn" id="tagsBtn">Tags</button>
     <button class="filterBtn" id="filtersBtn">Filters</button>
   </div>
@@ -238,12 +237,6 @@
 </div>
 
 <div class="backdrop" id="backdrop" hidden></div>
-
-<!-- Notes picker: Untagged / Tagged -->
-<div class="sheet" id="notesSheet" hidden style="max-height:40vh;">
-  <div class="sheet-header"><span class="sheet-header-spacer"></span><span class="sheet-title">Notes</span><button id="notesSheetClose">&#10005;</button></div>
-  <div class="sheet-body" id="notesSheetBody"></div>
-</div>
 
 <!-- Tags picker -->
 <div class="sheet" id="tagsSheet" hidden>
@@ -316,7 +309,7 @@
   var untaggedEntries = [];
   var msalApp = null;
   var msalInitPromise = null;
-  var searchState = { text: "", tag: null, fileType: null, notesFilter: null }; // notesFilter: null | "tagged" | "untagged"
+  var searchState = { text: "", tag: null, fileType: null };
   var currentPreviewItem = null;
   var previewRequestSeq = 0;
   var untaggedBlobCache = {}; // entry.id -> data: URL, in-memory only
@@ -328,18 +321,17 @@
   function cacheEls() {
     [
       "listScreen", "previewScreen", "clearBtn", "globalStatusMsg", "noteList",
-      "notesBtn", "tagsBtn", "filtersBtn", "searchInput", "searchClearBtn",
+      "tagsBtn", "filtersBtn", "searchInput", "searchClearBtn",
       "settingsBtn", "refreshBtn", "lastSyncedLabel",
       "previewCloseBtn", "previewContent",
       "backdrop",
-      "notesSheet", "notesSheetClose", "notesSheetBody",
       "tagsSheet", "tagsSheetClose", "tagsSheetBody",
       "filtersSheet", "filtersSheetClose", "filtersSheetBody",
       "settingsSheet", "settingsSheetClose", "azureClientId", "ghPat", "settingsSaveBtn"
     ].forEach(function (id) { el[id] = document.getElementById(id); });
   }
 
-  var ALL_SHEETS = ["notesSheet", "tagsSheet", "filtersSheet", "settingsSheet"];
+  var ALL_SHEETS = ["tagsSheet", "filtersSheet", "settingsSheet"];
   function openSheet(id) { el.backdrop.hidden = false; el[id].hidden = false; }
   function closeSheet(id) {
     el[id].hidden = true;
@@ -532,10 +524,6 @@
       var type = item._isUntagged ? untaggedFileType(item) : noteFileType(item);
       if (type !== searchState.fileType) return false;
     }
-    if (!opts.skipNotesFilter) {
-      if (searchState.notesFilter === "tagged" && item._isUntagged) return false;
-      if (searchState.notesFilter === "untagged" && !item._isUntagged) return false;
-    }
     return true;
   }
   function visibleItems() {
@@ -637,7 +625,6 @@
   }
 
   function renderFilterButtonStates() {
-    el.notesBtn.classList.toggle("hasActive", !!searchState.notesFilter);
     el.tagsBtn.classList.toggle("hasActive", !!searchState.tag);
     el.filtersBtn.classList.toggle("hasActive", !!searchState.fileType);
   }
@@ -657,26 +644,6 @@
     row.appendChild(countSpan);
     row.addEventListener("click", onClick);
     return row;
-  }
-
-  function renderNotesSheet() {
-    el.notesSheetBody.innerHTML = "";
-    var words = searchWords();
-    var taggedCount = 0, untaggedCount = 0;
-    notesData.concat(untaggedEntries).forEach(function (item) {
-      if (!baseFilterMatch(item, words, { skipNotesFilter: true })) return;
-      if (item._isUntagged) untaggedCount++; else taggedCount++;
-    });
-    el.notesSheetBody.appendChild(buildPickerRow("Tagged", taggedCount, searchState.notesFilter === "tagged", function () {
-      searchState.notesFilter = searchState.notesFilter === "tagged" ? null : "tagged";
-      closeSheet("notesSheet");
-      renderList();
-    }));
-    el.notesSheetBody.appendChild(buildPickerRow("Untagged", untaggedCount, searchState.notesFilter === "untagged", function () {
-      searchState.notesFilter = searchState.notesFilter === "untagged" ? null : "untagged";
-      closeSheet("notesSheet");
-      renderList();
-    }));
   }
 
   function renderTagsSheet() {
@@ -1069,16 +1036,14 @@
   // =========================================================================
   function wireEvents() {
     el.clearBtn.addEventListener("click", function () {
-      searchState = { text: "", tag: null, fileType: null, notesFilter: null };
+      searchState = { text: "", tag: null, fileType: null };
       el.searchInput.value = "";
       el.searchClearBtn.hidden = true;
       renderList();
     });
 
-    el.notesBtn.addEventListener("click", function () { renderNotesSheet(); openSheet("notesSheet"); });
     el.tagsBtn.addEventListener("click", function () { renderTagsSheet(); openSheet("tagsSheet"); });
     el.filtersBtn.addEventListener("click", function () { renderFiltersSheet(); openSheet("filtersSheet"); });
-    el.notesSheetClose.addEventListener("click", function () { closeSheet("notesSheet"); });
     el.tagsSheetClose.addEventListener("click", function () { closeSheet("tagsSheet"); });
     el.filtersSheetClose.addEventListener("click", function () { closeSheet("filtersSheet"); });
     el.backdrop.addEventListener("click", closeAllSheets);
