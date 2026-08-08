@@ -63,7 +63,20 @@
   }
 
   /* ---------- List screen ---------- */
-  #noteList { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px 14px 4px; min-height: 0; }
+  #noteList {
+    flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 8px 14px 4px; min-height: 0;
+    display: flex; flex-direction: column;
+  }
+  /* margin-top: auto (not justify-content: flex-end on #noteList itself) is
+     what lets a short result set hug the bottom of the window while a long
+     one still scrolls completely normally from the top — flex-end on the
+     scroll container itself is a known trap: once content overflows, most
+     browsers clamp scrollTop at 0 in a position that already hides the
+     first item, with no way to scroll up far enough to reach it. An auto
+     margin only ever consumes genuinely leftover space, so it collapses to
+     nothing the moment the card stack is tall enough to fill or overflow
+     the window. */
+  .note-stack { margin-top: auto; }
   .empty-state { color: var(--text3); font-size: 14px; padding: 60px 20px; text-align: center; }
   .note-card {
     background: var(--bg2); padding: 10px 12px; margin-bottom: 6px; cursor: pointer;
@@ -573,9 +586,12 @@
         : "No notes match your search and filters.";
       el.noteList.appendChild(empty);
     } else {
+      var stack = document.createElement("div");
+      stack.className = "note-stack";
       items.forEach(function (item) {
-        el.noteList.appendChild(item._isUntagged ? buildUntaggedCard(item) : buildNoteCard(item));
+        stack.appendChild(item._isUntagged ? buildUntaggedCard(item) : buildNoteCard(item));
       });
+      el.noteList.appendChild(stack);
     }
     renderFilterButtonStates();
   }
