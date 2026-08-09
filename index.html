@@ -318,8 +318,9 @@
   // State
   // =========================================================================
   var localConfig = { azureClientId: "", gh: null, lastSyncedAt: null };
-  var notesData = []; // real notes for the personal account, folder-notes already excluded
+  var notesData = []; // real notes for the personal account, folder-notes already excluded, notes-only scope applied
   var untaggedEntries = [];
+  var allTags = []; // every tracked tag from before the notes-only filter narrowed notesData, so 0-count tags still list
   var msalApp = null;
   var msalInitPromise = null;
   var searchState = { text: "", tag: null, fileType: null };
@@ -374,10 +375,11 @@
       var cached = JSON.parse(raw);
       notesData = cached.notes || [];
       untaggedEntries = cached.untagged || [];
+      allTags = cached.tags || [];
     } catch (e) { /* ignore */ }
   }
   function saveDataCache() {
-    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({ notes: notesData, untagged: untaggedEntries }));
+    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({ notes: notesData, untagged: untaggedEntries, tags: allTags }));
   }
 
   // =========================================================================
@@ -438,16 +440,39 @@
       .catch(function (err) { cb(err); });
   }
 
+  // Notes-only scope (Ron's call, 2026-08-09): PaperFind and PaperNote now focus
+  // on notes alone, ignoring the rest of Ron's OneDrive files. A note counts as
+  // in scope only if "0000-02 Notes" (case-insensitive) appears anywhere in its
+  // folder breadcrumb — the exact rule PaperTrail's own optional "Notes" filter
+  // already uses (isInNotesFolderNote in papertrail.html), applied here as a
+  // permanent, always-on rule instead of a toggle. No files move on OneDrive or
+  // in PaperTrail's data — this only narrows what PaperFind displays. Untagged
+  // (PaperNote inbox) entries are never checked against this rule: they have no
+  // folderPath yet, so they keep showing until PaperFile actually files them,
+  // which always lands inside a 0000-02 Notes subfolder anyway.
+  function isInNotesFolder(note) {
+    return !!note.folderPath && note.folderPath.split(" / ").some(function (seg) {
+      return !!seg && seg.toLowerCase() === "0000-02 notes";
+    });
+  }
+
   function loadNotesData(cb) {
     ghGetFile(DATA_REPO_OWNER, DATA_REPO_NAME, DATA_PATH, function (err, raw) {
       if (err) { cb(err); return; }
-      if (!raw) { notesData = []; cb(null); return; }
+      if (!raw) { notesData = []; allTags = []; cb(null); return; }
       try {
         var parsed = JSON.parse(raw);
         var acctData = parsed[ACCOUNT_KEY];
         var notes = (acctData && Array.isArray(acctData.notes)) ? acctData.notes : [];
         // Folder-notes are excluded from PaperFind entirely (2026-08-08 design decision).
-        notesData = notes.filter(function (n) { return n.type !== "folder"; });
+        var realNotes = notes.filter(function (n) { return n.type !== "folder"; });
+        // Every tracked tag stays visible in the Tags picker even at zero notes
+        // (Ron's call, 2026-08-09) — captured from the full set, before the
+        // notes-only filter below narrows notesData itself.
+        var tagSet = {};
+        realNotes.forEach(function (n) { if (n.tag) tagSet[n.tag] = true; });
+        allTags = Object.keys(tagSet).sort(function (a, b) { return a.localeCompare(b, undefined, { sensitivity: "base" }); });
+        notesData = realNotes.filter(isInNotesFolder);
         cb(null);
       } catch (e) { cb(new Error("PaperTrail's data.json looks damaged — couldn't read it.")); }
     });
@@ -687,16 +712,19 @@
       if (!n.tag) return;
       counts[n.tag] = (counts[n.tag] || 0) + 1;
     });
-    var tags = Object.keys(counts).sort(function (a, b) { return a.localeCompare(b, undefined, { sensitivity: "base" }); });
-    if (!tags.length) {
+    // Every tracked tag appears here, even at a count of 0 (Ron's call,
+    // 2026-08-09) — allTags is the full tag set from before the notes-only
+    // filter narrowed notesData, so a tag with real OneDrive content but
+    // nothing inside a 0000-02 Notes subfolder still shows, just at zero.
+    if (!allTags.length) {
       var empty = document.createElement("div");
       empty.className = "picker-empty";
       empty.textContent = "No tags to show.";
       el.tagsSheetBody.appendChild(empty);
       return;
     }
-    tags.forEach(function (tagName) {
-      el.tagsSheetBody.appendChild(buildPickerRow(tagName, counts[tagName], searchState.tag === tagName, function () {
+    allTags.forEach(function (tagName) {
+      el.tagsSheetBody.appendChild(buildPickerRow(tagName, counts[tagName] || 0, searchState.tag === tagName, function () {
         searchState.tag = searchState.tag === tagName ? null : tagName;
         closeSheet("tagsSheet");
         renderList();
