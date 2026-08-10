@@ -332,7 +332,7 @@
   var searchState = { text: "", tag: null, fileType: null };
   var currentPreviewItem = null;
   var previewRequestSeq = 0;
-  var inboxBlobCache = {}; // entry.id -> data: URL, in-memory only
+  var inboxBlobCache = {}; // entry.id -> raw base64 blob content, in-memory only
 
   // =========================================================================
   // DOM refs
@@ -1041,31 +1041,50 @@
     }).catch(function () { setPlaceholder("Couldn't load a preview for this file."); });
   }
 
-  function fetchInboxBlobDataUrl(entry) {
+  function fetchInboxBlobBase64(entry) {
     if (inboxBlobCache[entry.id]) return Promise.resolve(inboxBlobCache[entry.id]);
     if (!entry.blobPath || !localConfig.gh || !localConfig.gh.pat) return Promise.reject(new Error("no blob path on this entry"));
     var headers = { Authorization: "token " + localConfig.gh.pat };
     var contentsUrl = "https://api.github.com/repos/" + INBOX_REPO_OWNER + "/" + INBOX_REPO_NAME + "/contents/" + entry.blobPath;
     return fetch(contentsUrl, { headers: headers })
-      .then(function (res) { if (!res.ok) throw new Error("couldn't resolve this photo's blob"); return res.json(); })
+      .then(function (res) { if (!res.ok) throw new Error("couldn't resolve this entry's blob"); return res.json(); })
       .then(function (meta) {
         var blobUrl = "https://api.github.com/repos/" + INBOX_REPO_OWNER + "/" + INBOX_REPO_NAME + "/git/blobs/" + meta.sha;
         return fetch(blobUrl, { headers: headers });
       })
-      .then(function (res) { if (!res.ok) throw new Error("couldn't fetch this photo's content"); return res.json(); })
+      .then(function (res) { if (!res.ok) throw new Error("couldn't fetch this entry's content"); return res.json(); })
       .then(function (blob) {
-        var dataUrl = "data:" + (entry.mimeType || "application/octet-stream") + ";base64," + blob.content.replace(/\n/g, "");
-        inboxBlobCache[entry.id] = dataUrl;
-        return dataUrl;
+        var b64 = blob.content.replace(/\n/g, "");
+        inboxBlobCache[entry.id] = b64;
+        return b64;
       });
+  }
+
+  function fetchInboxBlobDataUrl(entry) {
+    return fetchInboxBlobBase64(entry).then(function (b64) {
+      return "data:" + (entry.mimeType || "application/octet-stream") + ";base64," + b64;
+    });
+  }
+
+  function fetchInboxBlobText(entry) {
+    return fetchInboxBlobBase64(entry).then(b64decode);
   }
 
   function renderInboxPreviewBody(entry, setBody, setPlaceholder) {
     if (entry.type === "text") {
-      var pre = document.createElement("pre");
-      pre.className = "preview-text";
-      pre.textContent = entry.textContent || "";
-      setBody(pre);
+      if (entry.textContent != null) {
+        var pre = document.createElement("pre");
+        pre.className = "preview-text";
+        pre.textContent = entry.textContent;
+        setBody(pre);
+        return;
+      }
+      fetchInboxBlobText(entry).then(function (text) {
+        var pre = document.createElement("pre");
+        pre.className = "preview-text";
+        pre.textContent = text;
+        setBody(pre);
+      }).catch(function () { setPlaceholder("Couldn't load a preview for this note."); });
       return;
     }
     if (entry.type === "photo") {
@@ -1122,8 +1141,11 @@
   }
   function shareInboxEntry(entry) {
     if (entry.type === "text") {
-      if (navigator.share) return navigator.share({ text: entry.textContent || "", title: entry.filename });
-      return Promise.reject(new Error("share-unsupported"));
+      var textPromise = entry.textContent != null ? Promise.resolve(entry.textContent) : fetchInboxBlobText(entry);
+      return textPromise.then(function (text) {
+        if (navigator.share) return navigator.share({ text: text, title: entry.filename });
+        return Promise.reject(new Error("share-unsupported"));
+      });
     }
     return fetchInboxBlobDataUrl(entry).then(function (dataUrl) {
       return dataUrlToFile(dataUrl, entry.filename, entry.mimeType);
