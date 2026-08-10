@@ -485,6 +485,13 @@
       try {
         var parsed = JSON.parse(raw);
         var entries = (parsed && Array.isArray(parsed.entries)) ? parsed.entries : [];
+        // As of PaperFile's 2026-08-10 rebuild, filing sets entry.tag instead
+        // of removing the entry from inbox.json — an already-filed note now
+        // stays in this same file permanently. Only entries with no tag yet
+        // are genuinely still waiting to be filed; anything tagged belongs to
+        // PaperFind's real note list (once step 3 rebuilds that read), not
+        // here.
+        entries = entries.filter(function (e) { return !e.tag; });
         entries.forEach(function (e) { e._isUntagged = true; });
         untaggedEntries = entries;
         cb(null);
