@@ -290,7 +290,7 @@
   var LOCAL_CONFIG_KEY = "paperFindLocalConfig"; // azureClientId, gh:{pat}, lastSyncedAt
   var DATA_CACHE_KEY = "paperFindDataCache";
   var DATA_REPO_OWNER = "RonSIll", DATA_REPO_NAME = "papertrail-data", DATA_PATH = "data.json";
-  var INBOX_REPO_OWNER = "RonSIll", INBOX_REPO_NAME = "papernote-data", INBOX_DATA_PATH = "inbox.json";
+  var INBOX_REPO_OWNER = "RonSIll", INBOX_REPO_NAME = "papernote-data", INBOX_DATA_PATH = "inbox.json", TAGS_PATH = "tags.json";
   var ACCOUNT_KEY = "personal";
   var DRIVE_BASE_URL = "https://graph.microsoft.com/v1.0/me/drive";
 
@@ -319,14 +319,20 @@
   // =========================================================================
   var localConfig = { azureClientId: "", gh: null, lastSyncedAt: null };
   var notesData = []; // real notes for the personal account, folder-notes already excluded, notes-only scope applied
-  var untaggedEntries = [];
-  var allTags = []; // every tracked tag from before the notes-only filter narrowed notesData, so 0-count tags still list
+  // Every entry from papernote-data/inbox.json — both genuinely unfiled
+  // captures and already-filed (tagged) notes, since PaperFile's 2026-08-10
+  // rebuild leaves a filed entry in this file permanently instead of
+  // removing it. Tag presence (entry.tag), not array membership, is what
+  // now distinguishes "waiting to be filed" from "filed."
+  var inboxEntries = [];
+  var masterTags = []; // from tags.json — the authoritative tag list, independent of which tags currently have OneDrive-synced or GitHub-native notes
+  var allTags = []; // union of masterTags + any tag actually seen on a note or inbox entry, so a tag with real content always lists even if tags.json somehow lagged
   var msalApp = null;
   var msalInitPromise = null;
   var searchState = { text: "", tag: null, fileType: null };
   var currentPreviewItem = null;
   var previewRequestSeq = 0;
-  var untaggedBlobCache = {}; // entry.id -> data: URL, in-memory only
+  var inboxBlobCache = {}; // entry.id -> data: URL, in-memory only
 
   // =========================================================================
   // DOM refs
@@ -374,12 +380,12 @@
       if (!raw) return;
       var cached = JSON.parse(raw);
       notesData = cached.notes || [];
-      untaggedEntries = cached.untagged || [];
+      inboxEntries = cached.inbox || [];
       allTags = cached.tags || [];
     } catch (e) { /* ignore */ }
   }
   function saveDataCache() {
-    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({ notes: notesData, untagged: untaggedEntries, tags: allTags }));
+    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({ notes: notesData, inbox: inboxEntries, tags: allTags }));
   }
 
   // =========================================================================
@@ -459,57 +465,81 @@
   function loadNotesData(cb) {
     ghGetFile(DATA_REPO_OWNER, DATA_REPO_NAME, DATA_PATH, function (err, raw) {
       if (err) { cb(err); return; }
-      if (!raw) { notesData = []; allTags = []; cb(null); return; }
+      if (!raw) { notesData = []; cb(null); return; }
       try {
         var parsed = JSON.parse(raw);
         var acctData = parsed[ACCOUNT_KEY];
         var notes = (acctData && Array.isArray(acctData.notes)) ? acctData.notes : [];
         // Folder-notes are excluded from PaperFind entirely (2026-08-08 design decision).
         var realNotes = notes.filter(function (n) { return n.type !== "folder"; });
-        // Every tracked tag stays visible in the Tags picker even at zero notes
-        // (Ron's call, 2026-08-09) — captured from the full set, before the
-        // notes-only filter below narrows notesData itself.
-        var tagSet = {};
-        realNotes.forEach(function (n) { if (n.tag) tagSet[n.tag] = true; });
-        allTags = Object.keys(tagSet).sort(function (a, b) { return a.localeCompare(b, undefined, { sensitivity: "base" }); });
         notesData = realNotes.filter(isInNotesFolder);
         cb(null);
       } catch (e) { cb(new Error("PaperTrail's data.json looks damaged — couldn't read it.")); }
     });
   }
 
-  function loadUntaggedData(cb) {
+  // Every entry in papernote-data/inbox.json — genuinely-unfiled captures
+  // and already-filed notes alike (see the inboxEntries comment above for
+  // why both live here as of PaperFile's 2026-08-10 rebuild). Filtering to
+  // "just what's waiting to be filed" happens at render/search time via
+  // entry.tag, not here — an already-filed note is a real, searchable note
+  // now, not something to exclude from this read.
+  function loadInboxData(cb) {
     ghGetFile(INBOX_REPO_OWNER, INBOX_REPO_NAME, INBOX_DATA_PATH, function (err, raw) {
       if (err) { cb(err); return; }
-      if (!raw) { untaggedEntries = []; cb(null); return; }
+      if (!raw) { inboxEntries = []; cb(null); return; }
       try {
         var parsed = JSON.parse(raw);
         var entries = (parsed && Array.isArray(parsed.entries)) ? parsed.entries : [];
-        // As of PaperFile's 2026-08-10 rebuild, filing sets entry.tag instead
-        // of removing the entry from inbox.json — an already-filed note now
-        // stays in this same file permanently. Only entries with no tag yet
-        // are genuinely still waiting to be filed; anything tagged belongs to
-        // PaperFind's real note list (once step 3 rebuilds that read), not
-        // here.
-        entries = entries.filter(function (e) { return !e.tag; });
-        entries.forEach(function (e) { e._isUntagged = true; });
-        untaggedEntries = entries;
+        entries.forEach(function (e) { e._fromInbox = true; });
+        inboxEntries = entries;
         cb(null);
       } catch (e) { cb(new Error("PaperNote's inbox.json looks damaged — couldn't read it.")); }
     });
   }
 
+  // tags.json is the authoritative tag list (seeded 2026-08-10, maintained
+  // by hand) — reading it directly means a tag shows in the Tags picker even
+  // if it has zero notes right now, the same "0-count tags still list"
+  // guarantee this app already gave OneDrive-synced tags, now extended to
+  // tags that exist only via GitHub-native (inbox) notes too.
+  function loadTagsData(cb) {
+    ghGetFile(INBOX_REPO_OWNER, INBOX_REPO_NAME, TAGS_PATH, function (err, raw) {
+      if (err) { cb(err); return; }
+      if (!raw) { masterTags = []; cb(null); return; }
+      try {
+        var parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) throw new Error("not an array");
+        masterTags = parsed;
+        cb(null);
+      } catch (e) { cb(new Error("tags.json looks damaged — couldn't read it.")); }
+    });
+  }
+
+  // Union of tags.json plus any tag actually seen on a real note or an
+  // already-filed inbox entry — a defensive fallback in case tags.json ever
+  // lags behind real content, not the primary source.
+  function recomputeAllTags() {
+    var set = {};
+    masterTags.forEach(function (t) { set[t] = true; });
+    notesData.forEach(function (n) { if (n.tag) set[n.tag] = true; });
+    inboxEntries.forEach(function (e) { if (e.tag) set[e.tag] = true; });
+    allTags = Object.keys(set).sort(function (a, b) { return a.localeCompare(b, undefined, { sensitivity: "base" }); });
+  }
+
   function refresh() {
     if (!localConfig.gh || !localConfig.gh.pat) { openSettings(); return; }
     hideStatus();
-    var notesErr = null, untaggedErr = null;
-    var pending = 2;
+    var notesErr = null, inboxErr = null, tagsErr = null;
+    var pending = 3;
     function done() {
       pending--;
       if (pending > 0) return;
+      recomputeAllTags();
       saveDataCache();
       if (notesErr) showStatus("Notes: " + notesErr.message, "error");
-      else if (untaggedErr) showStatus("Untagged: " + untaggedErr.message, "error");
+      else if (inboxErr) showStatus("Inbox: " + inboxErr.message, "error");
+      else if (tagsErr) showStatus("Tags: " + tagsErr.message, "error");
       else {
         localConfig.lastSyncedAt = new Date().toISOString();
         saveLocalConfig();
@@ -518,7 +548,8 @@
       renderList();
     }
     loadNotesData(function (err) { notesErr = err; done(); });
-    loadUntaggedData(function (err) { untaggedErr = err; done(); });
+    loadInboxData(function (err) { inboxErr = err; done(); });
+    loadTagsData(function (err) { tagsErr = err; done(); });
   }
 
   function renderLastSynced() {
@@ -552,7 +583,7 @@
     var m = /\.([a-z0-9]+)$/i.exec(note.filename);
     return m ? (EXT_TO_FILE_TYPE[m[1].toLowerCase()] || null) : null;
   }
-  function untaggedFileType(entry) {
+  function inboxFileType(entry) {
     if (entry.type === "photo") return "Images";
     return "Documents"; // "document" and the "text" fallback both land here
   }
@@ -566,14 +597,14 @@
     if (!matchesSearchWords(item.filename, words)) return false;
     if (!opts.skipTag && searchState.tag && item.tag !== searchState.tag) return false;
     if (!opts.skipFileType && searchState.fileType) {
-      var type = item._isUntagged ? untaggedFileType(item) : noteFileType(item);
+      var type = item._fromInbox ? inboxFileType(item) : noteFileType(item);
       if (type !== searchState.fileType) return false;
     }
     return true;
   }
   function visibleItems() {
     var words = searchWords();
-    var items = notesData.concat(untaggedEntries).filter(function (item) { return baseFilterMatch(item, words); });
+    var items = notesData.concat(inboxEntries).filter(function (item) { return baseFilterMatch(item, words); });
     // Fixed sort order only, per the 2026-08-08 design decision: newest added first.
     items.sort(function (a, b) { return new Date(b.capturedAt || 0) - new Date(a.capturedAt || 0); });
     return items;
@@ -613,15 +644,15 @@
     if (!items.length) {
       var empty = document.createElement("div");
       empty.className = "empty-state";
-      empty.textContent = (notesData.length + untaggedEntries.length) === 0
-        ? "No notes yet. Tap refresh to pull the latest from PaperTrail."
+      empty.textContent = (notesData.length + inboxEntries.length) === 0
+        ? "No notes yet. Tap refresh to pull the latest."
         : "No notes match your search and filters.";
       el.noteList.appendChild(empty);
     } else {
       var stack = document.createElement("div");
       stack.className = "note-stack";
       items.forEach(function (item) {
-        stack.appendChild(item._isUntagged ? buildUntaggedCard(item) : buildNoteCard(item));
+        stack.appendChild(item._fromInbox ? buildInboxCard(item) : buildNoteCard(item));
       });
       el.noteList.appendChild(stack);
     }
@@ -658,7 +689,7 @@
     return card;
   }
 
-  function buildUntaggedCard(entry) {
+  function buildInboxCard(entry) {
     var card = document.createElement("div");
     card.className = "note-card";
 
@@ -669,20 +700,31 @@
 
     var metaRow = document.createElement("div");
     metaRow.className = "note-meta-row";
-    var untaggedChip = document.createElement("span");
-    untaggedChip.className = "note-type-chip";
-    untaggedChip.textContent = "Untagged";
-    metaRow.appendChild(untaggedChip);
+    if (entry.tag) {
+      var tag = document.createElement("span");
+      tag.className = "note-tag";
+      tag.textContent = entry.tag;
+      metaRow.appendChild(tag);
+    } else {
+      var untaggedChip = document.createElement("span");
+      untaggedChip.className = "note-type-chip";
+      untaggedChip.textContent = "Untagged";
+      metaRow.appendChild(untaggedChip);
+    }
     var typeChip = document.createElement("span");
     typeChip.className = "note-type-chip";
     typeChip.textContent = entry.type === "photo" ? "Photo" : entry.type === "document" ? "Document" : "Text";
     metaRow.appendChild(typeChip);
     card.appendChild(metaRow);
 
-    var captured = document.createElement("div");
-    captured.className = "note-modified";
-    captured.textContent = entry.capturedAt ? ("Captured: " + formatMDY(entry.capturedAt)) : "";
-    card.appendChild(captured);
+    // modifiedAt only exists once an already-filed text note has actually
+    // been edited (a capability not yet built) — falls back to the capture
+    // date, which every entry always has.
+    var dateLine = document.createElement("div");
+    dateLine.className = "note-modified";
+    dateLine.textContent = entry.modifiedAt ? ("Modified: " + formatMDY(entry.modifiedAt))
+      : entry.capturedAt ? ("Captured: " + formatMDY(entry.capturedAt)) : "";
+    card.appendChild(dateLine);
 
     card.addEventListener("click", function () { openPreview(entry); });
     return card;
@@ -714,15 +756,15 @@
     el.tagsSheetBody.innerHTML = "";
     var words = searchWords();
     var counts = {};
-    notesData.forEach(function (n) {
+    notesData.concat(inboxEntries).forEach(function (n) {
       if (!baseFilterMatch(n, words, { skipTag: true })) return;
       if (!n.tag) return;
       counts[n.tag] = (counts[n.tag] || 0) + 1;
     });
     // Every tracked tag appears here, even at a count of 0 (Ron's call,
-    // 2026-08-09) — allTags is the full tag set from before the notes-only
-    // filter narrowed notesData, so a tag with real OneDrive content but
-    // nothing inside a 0000-02 Notes subfolder still shows, just at zero.
+    // 2026-08-09) — allTags is sourced from tags.json (the authoritative
+    // list), so a tag with no notes at all — OneDrive-synced or GitHub-native
+    // — still shows, just at zero.
     if (!allTags.length) {
       var empty = document.createElement("div");
       empty.className = "picker-empty";
@@ -744,9 +786,9 @@
     var words = searchWords();
     FILE_TYPE_CATEGORIES.forEach(function (type) {
       var count = 0;
-      notesData.concat(untaggedEntries).forEach(function (item) {
+      notesData.concat(inboxEntries).forEach(function (item) {
         if (!baseFilterMatch(item, words, { skipFileType: true })) return;
-        var itemType = item._isUntagged ? untaggedFileType(item) : noteFileType(item);
+        var itemType = item._fromInbox ? inboxFileType(item) : noteFileType(item);
         if (itemType === type) count++;
       });
       el.filtersSheetBody.appendChild(buildPickerRow(type, count, searchState.fileType === type, function () {
@@ -903,20 +945,24 @@
 
     var metaRow = document.createElement("div");
     metaRow.className = "note-meta-row";
-    if (item._isUntagged) {
+    if (item.tag) {
+      var tag = document.createElement("span");
+      tag.className = "note-tag";
+      tag.textContent = item.tag;
+      metaRow.appendChild(tag);
+      // folderPath only ever exists on an OneDrive-synced note — a
+      // GitHub-native inbox entry (filed or not) has no folder location.
+      if (!item._fromInbox) {
+        var path = document.createElement("span");
+        path.className = "note-path";
+        path.textContent = item.folderPath || "";
+        metaRow.appendChild(path);
+      }
+    } else {
       var untaggedChip = document.createElement("span");
       untaggedChip.className = "note-type-chip";
       untaggedChip.textContent = "Untagged";
       metaRow.appendChild(untaggedChip);
-    } else {
-      var tag = document.createElement("span");
-      tag.className = "note-tag";
-      tag.textContent = item.tag || "";
-      metaRow.appendChild(tag);
-      var path = document.createElement("span");
-      path.className = "note-path";
-      path.textContent = item.folderPath || "";
-      metaRow.appendChild(path);
     }
     el.previewContent.appendChild(metaRow);
 
@@ -940,8 +986,8 @@
       setBody(p);
     }
 
-    if (item._isUntagged) {
-      renderUntaggedPreviewBody(item, setBody, setPlaceholder);
+    if (item._fromInbox) {
+      renderInboxPreviewBody(item, setBody, setPlaceholder);
       return;
     }
 
@@ -995,8 +1041,8 @@
     }).catch(function () { setPlaceholder("Couldn't load a preview for this file."); });
   }
 
-  function fetchUntaggedBlobDataUrl(entry) {
-    if (untaggedBlobCache[entry.id]) return Promise.resolve(untaggedBlobCache[entry.id]);
+  function fetchInboxBlobDataUrl(entry) {
+    if (inboxBlobCache[entry.id]) return Promise.resolve(inboxBlobCache[entry.id]);
     if (!entry.blobPath || !localConfig.gh || !localConfig.gh.pat) return Promise.reject(new Error("no blob path on this entry"));
     var headers = { Authorization: "token " + localConfig.gh.pat };
     var contentsUrl = "https://api.github.com/repos/" + INBOX_REPO_OWNER + "/" + INBOX_REPO_NAME + "/contents/" + entry.blobPath;
@@ -1009,12 +1055,12 @@
       .then(function (res) { if (!res.ok) throw new Error("couldn't fetch this photo's content"); return res.json(); })
       .then(function (blob) {
         var dataUrl = "data:" + (entry.mimeType || "application/octet-stream") + ";base64," + blob.content.replace(/\n/g, "");
-        untaggedBlobCache[entry.id] = dataUrl;
+        inboxBlobCache[entry.id] = dataUrl;
         return dataUrl;
       });
   }
 
-  function renderUntaggedPreviewBody(entry, setBody, setPlaceholder) {
+  function renderInboxPreviewBody(entry, setBody, setPlaceholder) {
     if (entry.type === "text") {
       var pre = document.createElement("pre");
       pre.className = "preview-text";
@@ -1023,7 +1069,7 @@
       return;
     }
     if (entry.type === "photo") {
-      fetchUntaggedBlobDataUrl(entry).then(function (dataUrl) {
+      fetchInboxBlobDataUrl(entry).then(function (dataUrl) {
         var img = document.createElement("img");
         img.className = "preview-thumb";
         img.src = dataUrl;
@@ -1044,8 +1090,8 @@
   // =========================================================================
   function handlePreviewTap(item) {
     var task;
-    if (item._isUntagged) {
-      task = shareUntaggedEntry(item);
+    if (item._fromInbox) {
+      task = shareInboxEntry(item);
     } else if (isLinkNote(item)) {
       task = shareLinkNote(item);
     } else {
@@ -1053,7 +1099,7 @@
     }
     task.catch(function (err) {
       if (err && err.name === "AbortError") return; // user cancelled the share sheet
-      var fallbackUrl = item._isUntagged ? null : (item._resolvedTargetUrl || item.webUrl);
+      var fallbackUrl = item._fromInbox ? null : (item._resolvedTargetUrl || item.webUrl);
       if (fallbackUrl) window.open(fallbackUrl, "_blank", "noopener");
       else showStatus("Couldn't share this item.", "error");
     });
@@ -1074,12 +1120,12 @@
     if (navigator.share) return navigator.share({ url: url, title: note.filename });
     return Promise.reject(new Error("share-unsupported"));
   }
-  function shareUntaggedEntry(entry) {
+  function shareInboxEntry(entry) {
     if (entry.type === "text") {
       if (navigator.share) return navigator.share({ text: entry.textContent || "", title: entry.filename });
       return Promise.reject(new Error("share-unsupported"));
     }
-    return fetchUntaggedBlobDataUrl(entry).then(function (dataUrl) {
+    return fetchInboxBlobDataUrl(entry).then(function (dataUrl) {
       return dataUrlToFile(dataUrl, entry.filename, entry.mimeType);
     }).then(function (file) {
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
