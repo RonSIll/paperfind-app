@@ -147,6 +147,24 @@
     margin-top: 12px; color: var(--accent); font-size: 13px; font-weight: 500;
   }
 
+  /* ---------- Preview screen: edit/delete (inbox entries only) ---------- */
+  .preview-actions { display: flex; gap: 8px; margin-top: 14px; }
+  .action-btn {
+    flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+    background: var(--bg2); border: 1px solid var(--border); color: var(--text);
+    padding: 10px; font-size: 14px; font-weight: 500; cursor: pointer; font-family: inherit;
+  }
+  .action-btn.danger { color: var(--red); }
+  .edit-form { margin-top: 14px; }
+  .edit-form label { display: block; font-size: 13px; color: var(--text2); margin: 10px 0 4px; }
+  .edit-form label:first-child { margin-top: 0; }
+  .edit-form input[type="text"], .edit-form textarea {
+    width: 100%; border: 1px solid var(--border); background: var(--bg2); color: var(--text);
+    padding: 10px; font-size: 14px; outline: none; font-family: inherit; resize: vertical;
+  }
+  .edit-form textarea { min-height: 160px; line-height: 1.4; }
+  .btn-danger { background: var(--red); color: #fff; }
+
   /* ---------- Sheets ---------- */
   .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 20; }
   .sheet {
@@ -246,6 +264,7 @@
       </svg>
     </button>
   </header>
+  <div class="status-msg error" id="previewStatusMsg" hidden></div>
   <div id="previewContent"></div>
 </div>
 
@@ -263,6 +282,17 @@
   <div class="sheet-body" id="filtersSheetBody"></div>
 </div>
 
+<!-- Delete confirmation (already-filed notes only — unfiled notes delete with no confirmation) -->
+<div class="sheet" id="deleteConfirmSheet" hidden>
+  <div class="sheet-body" style="text-align:center; padding:6px 0 0;">
+    <div style="font-size:15px; margin-bottom:16px;">Delete this note? This can't be undone.</div>
+    <div class="btn-row">
+      <button id="deleteCancelBtn">Cancel</button>
+      <button class="btn-danger" id="deleteConfirmBtn">Delete</button>
+    </div>
+  </div>
+</div>
+
 <!-- Settings -->
 <div class="sheet" id="settingsSheet" hidden style="max-height:70vh;">
   <div class="sheet-header"><span class="sheet-header-spacer"></span><span class="sheet-title">Settings</span><button id="settingsSheetClose">&#10005;</button></div>
@@ -273,7 +303,7 @@
 
     <label for="ghPat" style="margin-top:16px;">GitHub token</label>
     <input type="text" id="ghPat" class="masked-input" placeholder="ghp_... or github_pat_..." autocomplete="off">
-    <div class="sheet-note">One token, read access to both the papertrail-data and papernote-data repos. If this is a fine-grained token, each repo needs to be explicitly granted — a token that only lists papernote-data will show Untagged notes but no real notes.</div>
+    <div class="sheet-note">One token: read access to papertrail-data, and read-and-write access to papernote-data (write is needed to edit or delete a note). If this is a fine-grained token, each repo needs to be explicitly granted — a token that only lists papernote-data will show Untagged notes but no real notes, and a papernote-data grant without write access will show notes but Edit/Delete will fail.</div>
 
     <div class="btn-row"><button class="btn-primary" id="settingsSaveBtn">Save</button></div>
   </div>
@@ -293,6 +323,7 @@
   var INBOX_REPO_OWNER = "RonSIll", INBOX_REPO_NAME = "papernote-data", INBOX_DATA_PATH = "inbox.json", TAGS_PATH = "tags.json";
   var ACCOUNT_KEY = "personal";
   var DRIVE_BASE_URL = "https://graph.microsoft.com/v1.0/me/drive";
+  var MAX_COMMIT_ATTEMPTS = 3; // edit/delete retry-on-ref-conflict ceiling, matching PaperNote/PaperFile
 
   var FILE_TYPE_CATEGORIES = ["Documents", "Images", "Links", "Media"];
   var FILE_TYPE_EXTENSIONS = {
@@ -343,15 +374,16 @@
       "listScreen", "previewScreen", "clearBtn", "globalStatusMsg", "noteList",
       "tagsBtn", "filtersBtn", "searchInput", "searchClearBtn",
       "settingsBtn", "refreshBtn", "lastSyncedLabel",
-      "previewCloseBtn", "previewContent",
+      "previewCloseBtn", "previewContent", "previewStatusMsg",
       "backdrop",
       "tagsSheet", "tagsSheetClose", "tagsSheetBody",
       "filtersSheet", "filtersSheetClose", "filtersSheetBody",
+      "deleteConfirmSheet", "deleteCancelBtn", "deleteConfirmBtn",
       "settingsSheet", "settingsSheetClose", "azureClientId", "ghPat", "settingsSaveBtn"
     ].forEach(function (id) { el[id] = document.getElementById(id); });
   }
 
-  var ALL_SHEETS = ["tagsSheet", "filtersSheet", "settingsSheet"];
+  var ALL_SHEETS = ["tagsSheet", "filtersSheet", "deleteConfirmSheet", "settingsSheet"];
   function openSheet(id) { el.backdrop.hidden = false; el[id].hidden = false; }
   function closeSheet(id) {
     el[id].hidden = true;
@@ -391,12 +423,28 @@
   // =========================================================================
   // Status banner
   // =========================================================================
+  // "success" messages (post-edit/delete confirmation, per the 2026-08-10 edit/delete
+  // design pass: "a brief confirmation message flashes, then the screen returns to the
+  // list") auto-dismiss after a couple seconds; error messages stay until tapped, unchanged.
+  var statusAutoHideTimer = null;
   function showStatus(text, type) {
+    if (statusAutoHideTimer) { clearTimeout(statusAutoHideTimer); statusAutoHideTimer = null; }
     el.globalStatusMsg.className = "status-msg " + (type || "error");
-    el.globalStatusMsg.textContent = text + " (tap to dismiss)";
+    el.globalStatusMsg.textContent = type === "success" ? text : (text + " (tap to dismiss)");
     el.globalStatusMsg.hidden = false;
+    if (type === "success") statusAutoHideTimer = setTimeout(hideStatus, 2200);
   }
-  function hideStatus() { el.globalStatusMsg.hidden = true; }
+  function hideStatus() {
+    if (statusAutoHideTimer) { clearTimeout(statusAutoHideTimer); statusAutoHideTimer = null; }
+    el.globalStatusMsg.hidden = true;
+  }
+
+  function showPreviewStatus(text) {
+    el.previewStatusMsg.className = "status-msg error";
+    el.previewStatusMsg.textContent = text + " (tap to dismiss)";
+    el.previewStatusMsg.hidden = false;
+  }
+  function hidePreviewStatus() { el.previewStatusMsg.hidden = true; }
 
   // =========================================================================
   // GitHub reads — Contents API with a Git Blobs API fallback past the
@@ -404,6 +452,7 @@
   // both data.json and its own read of papernote-data/inbox.json.
   // =========================================================================
   function b64decode(str) { return decodeURIComponent(escape(atob(str))); }
+  function b64encode(str) { return btoa(unescape(encodeURIComponent(str))); }
 
   // Checks repo-level access FIRST, before the file itself — a fine-grained
   // GitHub token that was never granted access to a repo gets a 404 on the
@@ -496,6 +545,10 @@
         cb(null);
       } catch (e) { cb(new Error("PaperNote's inbox.json looks damaged — couldn't read it.")); }
     });
+  }
+
+  function findInboxEntryById(id) {
+    return inboxEntries.filter(function (e) { return e.id === id; })[0];
   }
 
   // tags.json is the authoritative tag list (seeded 2026-08-10, maintained
@@ -899,6 +952,15 @@
   function isLinkNote(note) {
     return /\.url$/i.test(note.filename) || /\.lnk$/i.test(note.filename);
   }
+  // Strips path-illegal/control characters from a user-entered title before
+  // it's used as a filename or folded into a blobPath — same rule PaperNote's
+  // own capture flow already applies to a guessed or note-field filename.
+  function sanitizeFilename(name) {
+    var cleaned = String(name || "").replace(/[\\/:*?"<>|\x00-\x1f]/g, "").trim();
+    if (cleaned.length > 120) cleaned = cleaned.slice(0, 120);
+    return cleaned;
+  }
+
   function mimeForFilename(name) {
     var m = /\.([a-z0-9]+)$/i.exec(name || "");
     var ext = m ? m[1].toLowerCase() : "";
@@ -936,6 +998,7 @@
 
   function renderPreviewContent(item) {
     el.previewContent.innerHTML = "";
+    hidePreviewStatus();
     var mySeq = ++previewRequestSeq;
 
     var filename = document.createElement("div");
@@ -971,7 +1034,12 @@
     body.textContent = "Loading preview…";
     body.addEventListener("click", function () { handlePreviewTap(item); });
     el.previewContent.appendChild(body);
-    el.previewContent.appendChild(buildShareHint());
+    var shareHintNode = buildShareHint();
+    el.previewContent.appendChild(shareHintNode);
+
+    if (item._fromInbox) {
+      el.previewContent.appendChild(buildInboxActions(item, { filename: filename, body: body, shareHint: shareHintNode }));
+    }
 
     function setBody(node) {
       if (mySeq !== previewRequestSeq) return;
@@ -1100,6 +1168,190 @@
     setPlaceholder("No preview available for this file type.");
   }
 
+  var EDIT_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+  var TRASH_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+
+  // Deletes an inbox entry and updates local state on success — shared by
+  // both the confirmed (already-filed) and unconfirmed (unfiled, Discard-
+  // style) delete paths, which differ only in whether deleteConfirmSheet
+  // gates the call, not in what happens after.
+  function performDelete(entry) {
+    return attemptDeleteEntry(entry.id)
+      .then(function () {
+        var idx = inboxEntries.indexOf(entry);
+        if (idx !== -1) inboxEntries.splice(idx, 1);
+        delete inboxBlobCache[entry.id];
+        saveDataCache();
+        closePreview();
+        showStatus("Deleted.", "success");
+        renderList();
+      })
+      .catch(function (err) {
+        showPreviewStatus(err.message || "Couldn't delete — check your connection and try again.");
+      });
+  }
+
+  // Builds the Edit/Delete action row and the in-place edit form for an
+  // inbox entry's preview screen, per guidance/edit_delete_design.md. Only
+  // ever called for a _fromInbox item — real OneDrive notes get no
+  // Edit/Delete UI at all, since PaperFind never writes to PaperTrail's data.
+  // viewNodes are the read-only preview elements (title, body, share hint)
+  // that hide while the edit form is open and reappear on Cancel.
+  function buildInboxActions(entry, viewNodes) {
+    var wrap = document.createElement("div");
+
+    var actionsRow = document.createElement("div");
+    actionsRow.className = "preview-actions";
+
+    // Edit is filed-notes-only (2026-08-10 design decision) — an unfiled
+    // note's content still isn't editable in PaperFind, only deletable.
+    var editBtn = null;
+    if (entry.tag) {
+      editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "action-btn";
+      editBtn.innerHTML = EDIT_ICON + " Edit";
+      actionsRow.appendChild(editBtn);
+    }
+
+    var deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "action-btn danger";
+    deleteBtn.innerHTML = TRASH_ICON + " Delete";
+    actionsRow.appendChild(deleteBtn);
+    wrap.appendChild(actionsRow);
+
+    var editForm = document.createElement("div");
+    editForm.className = "edit-form";
+    editForm.hidden = true;
+
+    var titleLabel = document.createElement("label");
+    titleLabel.textContent = "Title";
+    var titleInput = document.createElement("input");
+    titleInput.type = "text";
+    editForm.appendChild(titleLabel);
+    editForm.appendChild(titleInput);
+
+    var bodyTextarea = null;
+    if (entry.type === "text") {
+      var bodyLabel = document.createElement("label");
+      bodyLabel.textContent = "Body";
+      bodyTextarea = document.createElement("textarea");
+      editForm.appendChild(bodyLabel);
+      editForm.appendChild(bodyTextarea);
+    }
+
+    var editErr = document.createElement("div");
+    editErr.className = "status-msg error";
+    editErr.hidden = true;
+    editForm.appendChild(editErr);
+
+    var btnRow = document.createElement("div");
+    btnRow.className = "btn-row";
+    var cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "Cancel";
+    var saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "btn-primary";
+    saveBtn.textContent = "Save";
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(saveBtn);
+    editForm.appendChild(btnRow);
+    wrap.appendChild(editForm);
+
+    // Loaded lazily: entry.textContent (legacy) resolves instantly; a
+    // blob-format entry fetches on first Edit tap, same as the read-only
+    // preview already does for its body.
+    var originalBodyText = entry.textContent;
+
+    function setFormBusy(busy) {
+      saveBtn.disabled = busy;
+      cancelBtn.disabled = busy;
+      if (bodyTextarea) bodyTextarea.disabled = busy;
+      titleInput.disabled = busy;
+    }
+
+    function enterEditMode() {
+      editErr.hidden = true;
+      titleInput.value = entry.filename || "";
+      actionsRow.hidden = true;
+      viewNodes.filename.hidden = true;
+      viewNodes.body.hidden = true;
+      viewNodes.shareHint.hidden = true;
+      editForm.hidden = false;
+      if (bodyTextarea) {
+        if (originalBodyText != null) {
+          bodyTextarea.value = originalBodyText;
+        } else {
+          bodyTextarea.value = "Loading…";
+          setFormBusy(true);
+          var textSource = entry.textContent != null ? Promise.resolve(entry.textContent) : fetchInboxBlobText(entry);
+          textSource.then(function (text) {
+            originalBodyText = text;
+            bodyTextarea.value = text;
+            setFormBusy(false);
+          }).catch(function () {
+            editErr.textContent = "Couldn't load this note's text to edit — check your connection and try again.";
+            editErr.hidden = false;
+            bodyTextarea.value = "";
+            setFormBusy(false);
+          });
+        }
+      }
+      titleInput.focus();
+    }
+
+    function exitEditMode() {
+      editForm.hidden = true;
+      actionsRow.hidden = false;
+      viewNodes.filename.hidden = false;
+      viewNodes.body.hidden = false;
+      viewNodes.shareHint.hidden = false;
+    }
+
+    if (editBtn) editBtn.addEventListener("click", enterEditMode);
+    cancelBtn.addEventListener("click", exitEditMode);
+
+    saveBtn.addEventListener("click", function () {
+      var newFilename = sanitizeFilename(titleInput.value);
+      var filenameChanged = newFilename !== entry.filename;
+      var bodyChanged = bodyTextarea ? (bodyTextarea.value !== originalBodyText) : false;
+      if (!newFilename) { editErr.textContent = "Title can't be empty."; editErr.hidden = false; return; }
+      if (!filenameChanged && !bodyChanged) { exitEditMode(); return; }
+
+      setFormBusy(true);
+      editErr.hidden = true;
+      attemptEditEntry(entry.id, newFilename, bodyChanged ? bodyTextarea.value : undefined)
+        .then(function (patch) {
+          entry.filename = patch.filename;
+          entry.modifiedAt = patch.modifiedAt;
+          if (patch.blobPath !== undefined) entry.blobPath = patch.blobPath;
+          if (patch.textContent !== undefined) entry.textContent = patch.textContent;
+          if (patch.newBodyBase64 !== undefined) inboxBlobCache[entry.id] = patch.newBodyBase64;
+          saveDataCache();
+          closePreview();
+          showStatus("Saved.", "success");
+          renderList();
+        })
+        .catch(function (err) {
+          editErr.textContent = err.message || "Couldn't save — check your connection and try again.";
+          editErr.hidden = false;
+          setFormBusy(false);
+        });
+    });
+
+    deleteBtn.addEventListener("click", function () {
+      if (entry.tag) {
+        openSheet("deleteConfirmSheet"); // deleteConfirmSheet's own confirm button acts on currentPreviewItem
+      } else {
+        performDelete(entry);
+      }
+    });
+
+    return wrap;
+  }
+
   // =========================================================================
   // Tap-to-share — the whole preview body is one tap target. Shares the
   // real file bytes (so the iOS share sheet offers Save/Print/Copy, not
@@ -1158,6 +1410,209 @@
   }
 
   // =========================================================================
+  // Writes — edit/delete for inbox entries (PaperFind's first write
+  // capability, per the 2026-08-10 edit/delete design pass, guidance/
+  // edit_delete_design.md). Scoped entirely to papernote-data/inbox.json and
+  // its blobs — PaperFind never writes to PaperTrail's OneDrive-backed data,
+  // so real notesData items get no Edit/Delete UI at all (see
+  // buildInboxActions below, only ever called for a _fromInbox item).
+  // Mirrors PaperNote's and PaperFile's own commit-with-retry-on-ref-conflict
+  // shape (read the current tree, mutate, build a new tree/commit, retry the
+  // ref update up to MAX_COMMIT_ATTEMPTS times on conflict) rather than
+  // inventing a new pattern.
+  // =========================================================================
+  function ghWriteHeaders(extra) {
+    var h = { Authorization: "token " + localConfig.gh.pat, Accept: "application/vnd.github+json" };
+    if (extra) for (var k in extra) h[k] = extra[k];
+    return h;
+  }
+  function inboxApiBase() {
+    return "https://api.github.com/repos/" + INBOX_REPO_OWNER + "/" + INBOX_REPO_NAME;
+  }
+  function ghJson(url, options) {
+    return fetch(url, options).then(function (res) {
+      if (!res.ok) {
+        return res.json().catch(function () { return {}; }).then(function (body) {
+          throw new Error((body && body.message) || ("GitHub didn't accept that request (status " + res.status + ")."));
+        });
+      }
+      return res.json();
+    });
+  }
+  function getDefaultBranch() {
+    return ghJson(inboxApiBase(), { headers: ghWriteHeaders() }).then(function (json) { return json.default_branch; });
+  }
+  function createBlob(base64Content) {
+    return ghJson(inboxApiBase() + "/git/blobs", {
+      method: "POST", headers: ghWriteHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ content: base64Content, encoding: "base64" })
+    }).then(function (json) { return json.sha; });
+  }
+  // Same shape check PaperNote's and PaperFile's own write paths already run
+  // before touching inbox.json, so a damaged or hand-edited file fails loudly
+  // here too instead of silently writing something worse.
+  function validateInboxDataShape(data) {
+    var ok = data && typeof data === "object" && Array.isArray(data.entries);
+    if (ok) {
+      for (var i = 0; i < data.entries.length; i++) {
+        var e = data.entries[i];
+        if (!e || typeof e.id !== "string" || ["text", "photo", "document"].indexOf(e.type) === -1 || typeof e.filename !== "string") {
+          ok = false;
+          break;
+        }
+      }
+    }
+    if (!ok) throw new Error("The shared notes file (inbox.json) looks damaged — its contents aren't what PaperFind expects. Nothing was changed. This needs someone to look at papernote-data/inbox.json directly before continuing.");
+    return data;
+  }
+  // Reads inbox.json straight out of a specific tree (tree -> blob), not the
+  // Contents API's ?ref=branch endpoint, which can lag a just-landed commit —
+  // same reasoning PaperNote/PaperFile document at their own equivalent read.
+  function getInboxDataFromTree(treeSha) {
+    return ghJson(inboxApiBase() + "/git/trees/" + treeSha, { headers: ghWriteHeaders() }).then(function (treeJson) {
+      var entry = (treeJson.tree || []).filter(function (e) { return e.path === INBOX_DATA_PATH; })[0];
+      if (!entry) return { entries: [] };
+      return ghJson(inboxApiBase() + "/git/blobs/" + entry.sha, { headers: ghWriteHeaders() }).then(function (blobJson) {
+        var data = JSON.parse(b64decode(blobJson.content.replace(/\n/g, "")));
+        data.entries = data.entries || [];
+        return validateInboxDataShape(data);
+      });
+    });
+  }
+  // Fetches just the current blob sha at an entry's existing blobPath (via
+  // the Contents API's metadata, not the blob content itself) — used to move
+  // an unchanged photo/document/text blob to a renamed path without
+  // re-uploading its bytes.
+  function fetchInboxBlobSha(entry) {
+    var headers = { Authorization: "token " + localConfig.gh.pat };
+    var contentsUrl = "https://api.github.com/repos/" + INBOX_REPO_OWNER + "/" + INBOX_REPO_NAME + "/contents/" + entry.blobPath;
+    return fetch(contentsUrl, { headers: headers }).then(function (res) {
+      if (!res.ok) throw new Error("Couldn't find this note's existing content to rename it — try refreshing.");
+      return res.json();
+    }).then(function (meta) { return meta.sha; });
+  }
+
+  // Generic commit-with-retry: buildFn(data) mutates data.entries in place
+  // (data is the live inbox.json contents read from the current tree) and
+  // returns { extraTreeEntries, commitMessage } — extraTreeEntries covers any
+  // blob write/delete (sha set, or sha:null to remove a path) that needs to
+  // land in the same atomic commit as the inbox.json update.
+  function commitInboxMutation(buildFn, attempt) {
+    var branch, commitSha;
+    return getDefaultBranch()
+      .then(function (b) {
+        branch = b;
+        return ghJson(inboxApiBase() + "/git/refs/heads/" + branch, { headers: ghWriteHeaders() });
+      })
+      .then(function (refJson) {
+        commitSha = refJson.object.sha;
+        return ghJson(inboxApiBase() + "/git/commits/" + commitSha, { headers: ghWriteHeaders() });
+      })
+      .then(function (commitJson) {
+        return getInboxDataFromTree(commitJson.tree.sha).then(function (data) {
+          var result = buildFn(data);
+          var treeEntries = [
+            { path: INBOX_DATA_PATH, mode: "100644", type: "blob", content: JSON.stringify(data, null, 2) }
+          ].concat(result.extraTreeEntries || []);
+          return ghJson(inboxApiBase() + "/git/trees", {
+            method: "POST", headers: ghWriteHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ base_tree: commitJson.tree.sha, tree: treeEntries })
+          }).then(function (treeJson) {
+            return ghJson(inboxApiBase() + "/git/commits", {
+              method: "POST", headers: ghWriteHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ message: result.commitMessage, tree: treeJson.sha, parents: [commitSha] })
+            });
+          });
+        });
+      })
+      .then(function (newCommitJson) {
+        return fetch(inboxApiBase() + "/git/refs/heads/" + branch, {
+          method: "PATCH", headers: ghWriteHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify({ sha: newCommitJson.sha })
+        });
+      })
+      .then(function (res) {
+        if (res.ok) return;
+        if (attempt < MAX_COMMIT_ATTEMPTS) return commitInboxMutation(buildFn, attempt + 1);
+        throw new Error("Couldn't save — someone else may have saved to the shared inbox at the same moment. Wait a few seconds and try again.");
+      });
+  }
+
+  // Edits a text note's title and/or body, or a photo/document's title only.
+  // newBodyTextIfChanged is undefined whenever the body wasn't touched (every
+  // photo/document call, and a text-note call where only the title changed) —
+  // in that case an existing blob's bytes are moved to the renamed path
+  // rather than re-uploaded; a legacy inline text entry (no blobPath yet)
+  // with a title-only edit just updates its filename, no blob involved at
+  // all. Resolves with a patch object the caller applies to the local
+  // inboxEntries copy, since the GitHub-side mutation happens on a freshly
+  // re-fetched tree, not the same JS object reference.
+  function attemptEditEntry(entryId, newFilename, newBodyTextIfChanged) {
+    var entry = findInboxEntryById(entryId);
+    if (!entry) return Promise.reject(new Error("This note is no longer here — try refreshing."));
+
+    function commitWithBlob(blobInfo) {
+      var modifiedAt = new Date().toISOString();
+      var patch = { filename: newFilename, modifiedAt: modifiedAt };
+      if (blobInfo) {
+        patch.blobPath = blobInfo.newPath;
+        patch.textContent = null;
+        if (blobInfo.newBodyBase64 !== undefined) patch.newBodyBase64 = blobInfo.newBodyBase64;
+      }
+      return commitInboxMutation(function (data) {
+        var target = data.entries.filter(function (e) { return e.id === entryId; })[0];
+        if (!target) throw new Error("This note is no longer here — try refreshing.");
+        var extra = [];
+        target.filename = newFilename;
+        if (blobInfo) {
+          if (target.blobPath && target.blobPath !== blobInfo.newPath) {
+            extra.push({ path: target.blobPath, mode: "100644", type: "blob", sha: null });
+          }
+          extra.push({ path: blobInfo.newPath, mode: "100644", type: "blob", sha: blobInfo.sha });
+          target.blobPath = blobInfo.newPath;
+          target.textContent = null;
+        }
+        target.modifiedAt = modifiedAt;
+        return { extraTreeEntries: extra, commitMessage: "PaperFind: edit " + newFilename };
+      }, 1).then(function () { return patch; });
+    }
+
+    if (newBodyTextIfChanged !== undefined) {
+      var textNewPath = "files/" + entry.id + "__" + newFilename;
+      var b64 = b64encode(newBodyTextIfChanged);
+      return createBlob(b64).then(function (sha) {
+        return commitWithBlob({ newPath: textNewPath, sha: sha, newBodyBase64: b64 });
+      });
+    }
+
+    // Title-only change from here down.
+    if (!entry.blobPath) return commitWithBlob(null); // legacy inline text note — nothing to move
+    var renamedPath = "files/" + entry.id + "__" + newFilename;
+    if (renamedPath === entry.blobPath) return commitWithBlob(null);
+    return fetchInboxBlobSha(entry).then(function (sha) {
+      return commitWithBlob({ newPath: renamedPath, sha: sha });
+    });
+  }
+
+  // Deletes an inbox entry outright: removes it from inbox.json and, if it
+  // has a blob, deletes that path too (sha:null), in one commit. Used both
+  // for an already-filed note (behind the confirmation card) and an unfiled
+  // note (Discard-style, no confirmation) — the underlying operation is the
+  // same either way, only the UI gate differs.
+  function attemptDeleteEntry(entryId) {
+    return commitInboxMutation(function (data) {
+      var removed = null;
+      data.entries = data.entries.filter(function (e) {
+        if (e.id === entryId) { removed = e; return false; }
+        return true;
+      });
+      var extra = [];
+      if (removed && removed.blobPath) extra.push({ path: removed.blobPath, mode: "100644", type: "blob", sha: null });
+      return { extraTreeEntries: extra, commitMessage: "PaperFind: delete " + (removed ? removed.filename : entryId) };
+    }, 1);
+  }
+
+  // =========================================================================
   // Settings
   // =========================================================================
   function openSettings() {
@@ -1211,6 +1666,13 @@
     el.refreshBtn.addEventListener("click", refresh);
     el.previewCloseBtn.addEventListener("click", closePreview);
     el.globalStatusMsg.addEventListener("click", hideStatus);
+    el.previewStatusMsg.addEventListener("click", hidePreviewStatus);
+
+    el.deleteCancelBtn.addEventListener("click", function () { closeSheet("deleteConfirmSheet"); });
+    el.deleteConfirmBtn.addEventListener("click", function () {
+      closeSheet("deleteConfirmSheet");
+      if (currentPreviewItem) performDelete(currentPreviewItem);
+    });
   }
 
   // =========================================================================
