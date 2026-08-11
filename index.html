@@ -13,7 +13,6 @@
 <meta name="theme-color" content="#ffffff">
 <link rel="apple-touch-icon" href="paperfind-icon-180.png">
 <link rel="manifest" href="data:application/manifest+json;base64,eyJuYW1lIjoiUGFwZXJGaW5kIiwic2hvcnRfbmFtZSI6IlBhcGVyRmluZCIsImRpc3BsYXkiOiJzdGFuZGFsb25lIiwiYmFja2dyb3VuZF9jb2xvciI6IiNmZmZmZmYiLCJ0aGVtZV9jb2xvciI6IiNmZmZmZmYiLCJzdGFydF91cmwiOiIuIiwib3JpZW50YXRpb24iOiJwb3J0cmFpdCJ9">
-<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.7.1/lib/msal-browser.min.js"></script>
 <style>
   :root {
     --bg: #ffffff; --bg2: #f4f4f6; --bg3: #e6e6ea; --text: #1c1c1e; --text2: #6b6b70;
@@ -138,16 +137,13 @@
     white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 14px;
     color: var(--text); text-align: left; align-self: stretch;
   }
-  .preview-site-slot { display: flex; align-items: center; gap: 10px; }
-  .preview-favicon { width: 40px; height: 40px; flex: 0 0 auto; }
-  .preview-site-host { font-size: 14px; color: var(--text2); word-break: break-all; }
   .preview-placeholder { color: var(--text3); font-size: 14px; }
   .share-hint {
     display: flex; align-items: center; justify-content: center; gap: 6px;
     margin-top: 12px; color: var(--accent); font-size: 13px; font-weight: 500;
   }
 
-  /* ---------- Preview screen: edit/delete (inbox entries only) ---------- */
+  /* ---------- Preview screen: edit/delete ---------- */
   .preview-actions { display: flex; gap: 8px; margin-top: 14px; }
   .action-btn {
     flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
@@ -297,13 +293,9 @@
 <div class="sheet" id="settingsSheet" hidden style="max-height:70vh;">
   <div class="sheet-header"><span class="sheet-header-spacer"></span><span class="sheet-title">Settings</span><button id="settingsSheetClose">&#10005;</button></div>
   <div class="sheet-body">
-    <label for="azureClientId">Azure app Client ID</label>
-    <input type="text" id="azureClientId" placeholder="00000000-0000-0000-0000-000000000000" autocomplete="off">
-    <div class="sheet-note">Same Client ID PaperTrail's Azure app registration uses — PaperFind's GitHub Pages URL needs to be added as a second redirect URI there once this app is deployed.</div>
-
-    <label for="ghPat" style="margin-top:16px;">GitHub token</label>
+    <label for="ghPat">GitHub token</label>
     <input type="text" id="ghPat" class="masked-input" placeholder="ghp_... or github_pat_..." autocomplete="off">
-    <div class="sheet-note">One token: read access to papertrail-data, and read-and-write access to papernote-data (write is needed to edit or delete a note). If this is a fine-grained token, each repo needs to be explicitly granted — a token that only lists papernote-data will show Untagged notes but no real notes, and a papernote-data grant without write access will show notes but Edit/Delete will fail.</div>
+    <div class="sheet-note">Read-and-write access to papernote-data — write is needed to edit or delete a note. If this is a fine-grained token, it needs to be explicitly granted access to that repo, or PaperFind won't be able to load anything.</div>
 
     <div class="btn-row"><button class="btn-primary" id="settingsSaveBtn">Save</button></div>
   </div>
@@ -316,50 +308,31 @@
   // =========================================================================
   // Config & constants
   // =========================================================================
-  var GRAPH_SCOPES = ["Files.Read"];
-  var LOCAL_CONFIG_KEY = "paperFindLocalConfig"; // azureClientId, gh:{pat}, lastSyncedAt
+  var LOCAL_CONFIG_KEY = "paperFindLocalConfig"; // gh:{pat}, lastSyncedAt
   var DATA_CACHE_KEY = "paperFindDataCache";
-  var DATA_REPO_OWNER = "RonSIll", DATA_REPO_NAME = "papertrail-data", DATA_PATH = "data.json";
   var INBOX_REPO_OWNER = "RonSIll", INBOX_REPO_NAME = "papernote-data", INBOX_DATA_PATH = "inbox.json", TAGS_PATH = "tags.json";
-  var ACCOUNT_KEY = "personal";
-  var DRIVE_BASE_URL = "https://graph.microsoft.com/v1.0/me/drive";
   var MAX_COMMIT_ATTEMPTS = 3; // edit/delete retry-on-ref-conflict ceiling, matching PaperNote/PaperFile
 
-  var FILE_TYPE_CATEGORIES = ["Documents", "Images", "Links", "Media"];
-  var FILE_TYPE_EXTENSIONS = {
-    Documents: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md"],
-    Images: ["jpg", "jpeg", "png", "heic", "gif"],
-    Links: ["url", "lnk"],
-    Media: ["mp4", "mov", "mp3", "wav"]
-  };
-  var EXT_TO_FILE_TYPE = {};
-  Object.keys(FILE_TYPE_EXTENSIONS).forEach(function (type) {
-    FILE_TYPE_EXTENSIONS[type].forEach(function (ext) { EXT_TO_FILE_TYPE[ext] = type; });
-  });
-  var MIME_BY_EXT = {
-    pdf: "application/pdf", doc: "application/msword",
-    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ppt: "application/vnd.ms-powerpoint", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    txt: "text/plain", md: "text/markdown", jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
-    heic: "image/heic", gif: "image/gif", mp4: "video/mp4", mov: "video/quicktime", mp3: "audio/mpeg", wav: "audio/wav"
-  };
+  // Only two entry types exist (2026-08-10 decision): photo and text — so
+  // only two filter categories are ever reachable. No Documents/Links/Media
+  // split; those belonged to the retired OneDrive file-type model.
+  var FILE_TYPE_CATEGORIES = ["Images", "Documents"];
 
   // =========================================================================
   // State
   // =========================================================================
-  var localConfig = { azureClientId: "", gh: null, lastSyncedAt: null };
-  var notesData = []; // real notes for the personal account, folder-notes already excluded, notes-only scope applied
+  var localConfig = { gh: null, lastSyncedAt: null };
   // Every entry from papernote-data/inbox.json — both genuinely unfiled
   // captures and already-filed (tagged) notes, since PaperFile's 2026-08-10
   // rebuild leaves a filed entry in this file permanently instead of
   // removing it. Tag presence (entry.tag), not array membership, is what
-  // now distinguishes "waiting to be filed" from "filed."
+  // distinguishes "waiting to be filed" from "filed." This is the one and
+  // only note source PaperFind reads — the app was fully disconnected from
+  // PaperTrail's OneDrive-backed data.json on 2026-08-11, after the full
+  // OneDrive-to-GitHub migration completed.
   var inboxEntries = [];
-  var masterTags = []; // from tags.json — the authoritative tag list, independent of which tags currently have OneDrive-synced or GitHub-native notes
-  var allTags = []; // union of masterTags + any tag actually seen on a note or inbox entry, so a tag with real content always lists even if tags.json somehow lagged
-  var msalApp = null;
-  var msalInitPromise = null;
+  var masterTags = []; // from tags.json — the authoritative tag list, independent of which tags currently have notes
+  var allTags = []; // union of masterTags + any tag actually seen on a note, so a tag with real content always lists even if tags.json somehow lagged
   var searchState = { text: "", tag: null, fileType: null };
   var currentPreviewItem = null;
   var previewRequestSeq = 0;
@@ -379,7 +352,7 @@
       "tagsSheet", "tagsSheetClose", "tagsSheetBody",
       "filtersSheet", "filtersSheetClose", "filtersSheetBody",
       "deleteConfirmSheet", "deleteCancelBtn", "deleteConfirmBtn",
-      "settingsSheet", "settingsSheetClose", "azureClientId", "ghPat", "settingsSaveBtn"
+      "settingsSheet", "settingsSheetClose", "ghPat", "settingsSaveBtn"
     ].forEach(function (id) { el[id] = document.getElementById(id); });
   }
 
@@ -411,13 +384,12 @@
       var raw = localStorage.getItem(DATA_CACHE_KEY);
       if (!raw) return;
       var cached = JSON.parse(raw);
-      notesData = cached.notes || [];
       inboxEntries = cached.inbox || [];
       allTags = cached.tags || [];
     } catch (e) { /* ignore */ }
   }
   function saveDataCache() {
-    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({ notes: notesData, inbox: inboxEntries, tags: allTags }));
+    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({ inbox: inboxEntries, tags: allTags }));
   }
 
   // =========================================================================
@@ -449,7 +421,7 @@
   // =========================================================================
   // GitHub reads — Contents API with a Git Blobs API fallback past the
   // ~1MB inline-content ceiling, same pattern PaperTrail itself uses for
-  // both data.json and its own read of papernote-data/inbox.json.
+  // its own data.json.
   // =========================================================================
   function b64decode(str) { return decodeURIComponent(escape(atob(str))); }
   function b64encode(str) { return btoa(unescape(encodeURIComponent(str))); }
@@ -459,9 +431,9 @@
   // file too, deliberately indistinguishable from "file doesn't exist"
   // (GitHub does this on purpose so an unauthorized token can't even
   // confirm a private repo exists). Without this check, a token missing
-  // access to one of PaperFind's two source repos silently looks identical
-  // to that repo's file genuinely being empty — same failure mode PaperTrail
-  // itself hit and fixed for its own read of papernote-data/inbox.json.
+  // access to papernote-data silently looks identical to that repo's file
+  // genuinely being empty — same failure mode PaperTrail itself hit and
+  // fixed for its own read of papernote-data/inbox.json.
   function ghGetFile(owner, repo, path, cb) {
     if (!localConfig.gh || !localConfig.gh.pat) { cb(new Error("no-token")); return; }
     var headers = { Authorization: "token " + localConfig.gh.pat };
@@ -495,38 +467,6 @@
       .catch(function (err) { cb(err); });
   }
 
-  // Notes-only scope (Ron's call, 2026-08-09): PaperFind and PaperNote now focus
-  // on notes alone, ignoring the rest of Ron's OneDrive files. A note counts as
-  // in scope only if "0000-02 Notes" (case-insensitive) appears anywhere in its
-  // folder breadcrumb — the exact rule PaperTrail's own optional "Notes" filter
-  // already uses (isInNotesFolderNote in papertrail.html), applied here as a
-  // permanent, always-on rule instead of a toggle. No files move on OneDrive or
-  // in PaperTrail's data — this only narrows what PaperFind displays. Untagged
-  // (PaperNote inbox) entries are never checked against this rule: they have no
-  // folderPath yet, so they keep showing until PaperFile actually files them,
-  // which always lands inside a 0000-02 Notes subfolder anyway.
-  function isInNotesFolder(note) {
-    return !!note.folderPath && note.folderPath.split(" / ").some(function (seg) {
-      return !!seg && seg.toLowerCase() === "0000-02 notes";
-    });
-  }
-
-  function loadNotesData(cb) {
-    ghGetFile(DATA_REPO_OWNER, DATA_REPO_NAME, DATA_PATH, function (err, raw) {
-      if (err) { cb(err); return; }
-      if (!raw) { notesData = []; cb(null); return; }
-      try {
-        var parsed = JSON.parse(raw);
-        var acctData = parsed[ACCOUNT_KEY];
-        var notes = (acctData && Array.isArray(acctData.notes)) ? acctData.notes : [];
-        // Folder-notes are excluded from PaperFind entirely (2026-08-08 design decision).
-        var realNotes = notes.filter(function (n) { return n.type !== "folder"; });
-        notesData = realNotes.filter(isInNotesFolder);
-        cb(null);
-      } catch (e) { cb(new Error("PaperTrail's data.json looks damaged — couldn't read it.")); }
-    });
-  }
-
   // Every entry in papernote-data/inbox.json — genuinely-unfiled captures
   // and already-filed notes alike (see the inboxEntries comment above for
   // why both live here as of PaperFile's 2026-08-10 rebuild). Filtering to
@@ -540,7 +480,6 @@
       try {
         var parsed = JSON.parse(raw);
         var entries = (parsed && Array.isArray(parsed.entries)) ? parsed.entries : [];
-        entries.forEach(function (e) { e._fromInbox = true; });
         inboxEntries = entries;
         cb(null);
       } catch (e) { cb(new Error("PaperNote's inbox.json looks damaged — couldn't read it.")); }
@@ -553,9 +492,7 @@
 
   // tags.json is the authoritative tag list (seeded 2026-08-10, maintained
   // by hand) — reading it directly means a tag shows in the Tags picker even
-  // if it has zero notes right now, the same "0-count tags still list"
-  // guarantee this app already gave OneDrive-synced tags, now extended to
-  // tags that exist only via GitHub-native (inbox) notes too.
+  // if it has zero notes right now.
   function loadTagsData(cb) {
     ghGetFile(INBOX_REPO_OWNER, INBOX_REPO_NAME, TAGS_PATH, function (err, raw) {
       if (err) { cb(err); return; }
@@ -569,13 +506,12 @@
     });
   }
 
-  // Union of tags.json plus any tag actually seen on a real note or an
-  // already-filed inbox entry — a defensive fallback in case tags.json ever
-  // lags behind real content, not the primary source.
+  // Union of tags.json plus any tag actually seen on a note — a defensive
+  // fallback in case tags.json ever lags behind real content, not the
+  // primary source.
   function recomputeAllTags() {
     var set = {};
     masterTags.forEach(function (t) { set[t] = true; });
-    notesData.forEach(function (n) { if (n.tag) set[n.tag] = true; });
     inboxEntries.forEach(function (e) { if (e.tag) set[e.tag] = true; });
     allTags = Object.keys(set).sort(function (a, b) { return a.localeCompare(b, undefined, { sensitivity: "base" }); });
   }
@@ -583,15 +519,14 @@
   function refresh() {
     if (!localConfig.gh || !localConfig.gh.pat) { openSettings(); return; }
     hideStatus();
-    var notesErr = null, inboxErr = null, tagsErr = null;
-    var pending = 3;
+    var inboxErr = null, tagsErr = null;
+    var pending = 2;
     function done() {
       pending--;
       if (pending > 0) return;
       recomputeAllTags();
       saveDataCache();
-      if (notesErr) showStatus("Notes: " + notesErr.message, "error");
-      else if (inboxErr) showStatus("Inbox: " + inboxErr.message, "error");
+      if (inboxErr) showStatus("Notes: " + inboxErr.message, "error");
       else if (tagsErr) showStatus("Tags: " + tagsErr.message, "error");
       else {
         localConfig.lastSyncedAt = new Date().toISOString();
@@ -600,7 +535,6 @@
       renderLastSynced();
       renderList();
     }
-    loadNotesData(function (err) { notesErr = err; done(); });
     loadInboxData(function (err) { inboxErr = err; done(); });
     loadTagsData(function (err) { tagsErr = err; done(); });
   }
@@ -632,13 +566,9 @@
     var lower = (filename || "").toLowerCase();
     return words.every(function (w) { return lower.indexOf(w) !== -1; });
   }
-  function noteFileType(note) {
-    var m = /\.([a-z0-9]+)$/i.exec(note.filename);
-    return m ? (EXT_TO_FILE_TYPE[m[1].toLowerCase()] || null) : null;
-  }
-  function inboxFileType(entry) {
+  function fileType(entry) {
     if (entry.type === "photo") return "Images";
-    return "Documents"; // "document" and the "text" fallback both land here
+    return "Documents"; // "text" (and legacy "document") both land here
   }
   // Shared predicate for the main list and every picker sheet's counts.
   // opts lets a sheet compute a row's count as "how many would match if I
@@ -649,15 +579,12 @@
     opts = opts || {};
     if (!matchesSearchWords(item.filename, words)) return false;
     if (!opts.skipTag && searchState.tag && item.tag !== searchState.tag) return false;
-    if (!opts.skipFileType && searchState.fileType) {
-      var type = item._fromInbox ? inboxFileType(item) : noteFileType(item);
-      if (type !== searchState.fileType) return false;
-    }
+    if (!opts.skipFileType && searchState.fileType && fileType(item) !== searchState.fileType) return false;
     return true;
   }
   function visibleItems() {
     var words = searchWords();
-    var items = notesData.concat(inboxEntries).filter(function (item) { return baseFilterMatch(item, words); });
+    var items = inboxEntries.filter(function (item) { return baseFilterMatch(item, words); });
     // Fixed sort order only, per the 2026-08-08 design decision: newest added first.
     items.sort(function (a, b) { return new Date(b.capturedAt || 0) - new Date(a.capturedAt || 0); });
     return items;
@@ -697,52 +624,20 @@
     if (!items.length) {
       var empty = document.createElement("div");
       empty.className = "empty-state";
-      empty.textContent = (notesData.length + inboxEntries.length) === 0
+      empty.textContent = inboxEntries.length === 0
         ? "No notes yet. Tap refresh to pull the latest."
         : "No notes match your search and filters.";
       el.noteList.appendChild(empty);
     } else {
       var stack = document.createElement("div");
       stack.className = "note-stack";
-      items.forEach(function (item) {
-        stack.appendChild(item._fromInbox ? buildInboxCard(item) : buildNoteCard(item));
-      });
+      items.forEach(function (item) { stack.appendChild(buildNoteCard(item)); });
       el.noteList.appendChild(stack);
     }
     renderFilterButtonStates();
   }
 
-  function buildNoteCard(note) {
-    var card = document.createElement("div");
-    card.className = "note-card";
-
-    var filename = document.createElement("div");
-    filename.className = "note-filename";
-    filename.textContent = note.filename;
-    card.appendChild(filename);
-
-    var metaRow = document.createElement("div");
-    metaRow.className = "note-meta-row";
-    var tag = document.createElement("span");
-    tag.className = "note-tag";
-    tag.textContent = note.tag || "";
-    metaRow.appendChild(tag);
-    var path = document.createElement("span");
-    path.className = "note-path";
-    path.textContent = note.folderPath || "";
-    metaRow.appendChild(path);
-    card.appendChild(metaRow);
-
-    var modified = document.createElement("div");
-    modified.className = "note-modified";
-    modified.textContent = note.modifiedAt ? ("Modified: " + formatMDY(note.modifiedAt)) : "";
-    card.appendChild(modified);
-
-    card.addEventListener("click", function () { openPreview(note); });
-    return card;
-  }
-
-  function buildInboxCard(entry) {
+  function buildNoteCard(entry) {
     var card = document.createElement("div");
     card.className = "note-card";
 
@@ -766,13 +661,12 @@
     }
     var typeChip = document.createElement("span");
     typeChip.className = "note-type-chip";
-    typeChip.textContent = entry.type === "photo" ? "Photo" : entry.type === "document" ? "Document" : "Text";
+    typeChip.textContent = entry.type === "photo" ? "Photo" : "Text";
     metaRow.appendChild(typeChip);
     card.appendChild(metaRow);
 
-    // modifiedAt only exists once an already-filed text note has actually
-    // been edited (a capability not yet built) — falls back to the capture
-    // date, which every entry always has.
+    // modifiedAt only exists once a note has actually been edited — falls
+    // back to the capture date, which every entry always has.
     var dateLine = document.createElement("div");
     dateLine.className = "note-modified";
     dateLine.textContent = entry.modifiedAt ? ("Modified: " + formatMDY(entry.modifiedAt))
@@ -809,15 +703,14 @@
     el.tagsSheetBody.innerHTML = "";
     var words = searchWords();
     var counts = {};
-    notesData.concat(inboxEntries).forEach(function (n) {
+    inboxEntries.forEach(function (n) {
       if (!baseFilterMatch(n, words, { skipTag: true })) return;
       if (!n.tag) return;
       counts[n.tag] = (counts[n.tag] || 0) + 1;
     });
     // Every tracked tag appears here, even at a count of 0 (Ron's call,
     // 2026-08-09) — allTags is sourced from tags.json (the authoritative
-    // list), so a tag with no notes at all — OneDrive-synced or GitHub-native
-    // — still shows, just at zero.
+    // list), so a tag with no notes yet still shows, just at zero.
     if (!allTags.length) {
       var empty = document.createElement("div");
       empty.className = "picker-empty";
@@ -839,10 +732,9 @@
     var words = searchWords();
     FILE_TYPE_CATEGORIES.forEach(function (type) {
       var count = 0;
-      notesData.concat(inboxEntries).forEach(function (item) {
+      inboxEntries.forEach(function (item) {
         if (!baseFilterMatch(item, words, { skipFileType: true })) return;
-        var itemType = item._fromInbox ? inboxFileType(item) : noteFileType(item);
-        if (itemType === type) count++;
+        if (fileType(item) === type) count++;
       });
       el.filtersSheetBody.appendChild(buildPickerRow(type, count, searchState.fileType === type, function () {
         searchState.fileType = searchState.fileType === type ? null : type;
@@ -853,105 +745,8 @@
   }
 
   // =========================================================================
-  // MSAL / Graph — only needed live for preview content (thumbnails, text,
-  // link resolution). PaperFind never writes to OneDrive and never runs its
-  // own sync; data.json already has everything the list screen needs.
+  // Helpers
   // =========================================================================
-  function initMsal() {
-    if (!localConfig.azureClientId) return Promise.resolve(null);
-    if (msalInitPromise) return msalInitPromise;
-    msalApp = new msal.PublicClientApplication({
-      auth: {
-        clientId: localConfig.azureClientId,
-        authority: "https://login.microsoftonline.com/common",
-        redirectUri: window.location.href
-      },
-      cache: { cacheLocation: "localStorage" }
-    });
-    msalInitPromise = msalApp.initialize().then(function () { return msalApp; });
-    return msalInitPromise;
-  }
-
-  // Popups are the same pattern PaperTrail/PaperNote use, but PaperFind
-  // runs as an installed iPhone home-screen app (standalone display mode)
-  // far more often than PaperTrail does — Safari's standalone PWA container
-  // is known to handle window.open popups less reliably than a normal
-  // browser tab. If sign-in silently fails to complete in standalone mode,
-  // this is the first place to look; a redirect-based flow
-  // (loginRedirect/acquireTokenRedirect) is the fallback if so.
-  function getGraphToken() {
-    return initMsal().then(function (app) {
-      if (!app) return Promise.reject(new Error("Set an Azure app Client ID under Settings first."));
-      var accounts = app.getAllAccounts();
-      var account = accounts[0];
-      if (account) {
-        return app.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: account }).then(function (r) {
-          return r.accessToken;
-        }).catch(function () {
-          return app.acquireTokenPopup({ scopes: GRAPH_SCOPES }).then(function (r) { return r.accessToken; });
-        });
-      }
-      return app.loginPopup({ scopes: GRAPH_SCOPES }).then(function (r) { return r.accessToken; });
-    });
-  }
-
-  function graphFetch(url, token) {
-    return fetch(url, { headers: { Authorization: "Bearer " + token } }).then(function (res) {
-      if (!res.ok) throw new Error("Graph request failed: " + res.status);
-      return res.json();
-    });
-  }
-
-  function fetchFileText(itemId, token) {
-    var metaUrl = DRIVE_BASE_URL + "/items/" + itemId + "?$select=%40microsoft.graph.downloadUrl";
-    return graphFetch(metaUrl, token).then(function (meta) {
-      var downloadUrl = meta["@microsoft.graph.downloadUrl"];
-      if (!downloadUrl) throw new Error("no download URL");
-      return fetch(downloadUrl).then(function (res) {
-        if (!res.ok) throw new Error("content fetch failed");
-        return res.text();
-      });
-    });
-  }
-  function fetchFileArrayBuffer(itemId, token) {
-    var metaUrl = DRIVE_BASE_URL + "/items/" + itemId + "?$select=%40microsoft.graph.downloadUrl";
-    return graphFetch(metaUrl, token).then(function (meta) {
-      var downloadUrl = meta["@microsoft.graph.downloadUrl"];
-      if (!downloadUrl) throw new Error("no download URL");
-      return fetch(downloadUrl).then(function (res) {
-        if (!res.ok) throw new Error("content fetch failed");
-        return res.arrayBuffer();
-      });
-    });
-  }
-  function fetchUrlShortcutTarget(itemId, token) {
-    return fetchFileText(itemId, token).then(function (text) {
-      var match = text.match(/^URL=(.+)$/im);
-      if (!match) throw new Error("no URL= line found");
-      return match[1].trim();
-    });
-  }
-  // Windows .lnk files are a proprietary binary format — rather than
-  // implementing the full spec just to find a target, decode the bytes as
-  // UTF-16LE (how Windows stores a shortcut's target string) and scan for
-  // an http(s) address, same approach PaperTrail itself uses.
-  function extractUrlFromLnkBytes(buffer) {
-    var bytes = new Uint8Array(buffer);
-    var chars = [];
-    for (var i = 0; i + 1 < bytes.length; i += 2) {
-      var code = bytes[i] | (bytes[i + 1] << 8);
-      chars.push(code >= 32 && code < 0x2000 ? String.fromCharCode(code) : " ");
-    }
-    var match = chars.join("").match(/https?:\/\/[^\s"'<>]+/i);
-    return match ? match[0] : null;
-  }
-  function resolveLnkUrl(itemId, token) {
-    return fetchFileArrayBuffer(itemId, token).then(extractUrlFromLnkBytes);
-  }
-
-  function isLinkNote(note) {
-    return /\.url$/i.test(note.filename) || /\.lnk$/i.test(note.filename);
-  }
   // Strips path-illegal/control characters from a user-entered title before
   // it's used as a filename or folded into a blobPath — same rule PaperNote's
   // own capture flow already applies to a guessed or note-field filename.
@@ -959,12 +754,6 @@
     var cleaned = String(name || "").replace(/[\\/:*?"<>|\x00-\x1f]/g, "").trim();
     if (cleaned.length > 120) cleaned = cleaned.slice(0, 120);
     return cleaned;
-  }
-
-  function mimeForFilename(name) {
-    var m = /\.([a-z0-9]+)$/i.exec(name || "");
-    var ext = m ? m[1].toLowerCase() : "";
-    return MIME_BY_EXT[ext] || "application/octet-stream";
   }
   function dataUrlToFile(dataUrl, filename, mimeType) {
     var parts = dataUrl.split(",");
@@ -1013,14 +802,6 @@
       tag.className = "note-tag";
       tag.textContent = item.tag;
       metaRow.appendChild(tag);
-      // folderPath only ever exists on an OneDrive-synced note — a
-      // GitHub-native inbox entry (filed or not) has no folder location.
-      if (!item._fromInbox) {
-        var path = document.createElement("span");
-        path.className = "note-path";
-        path.textContent = item.folderPath || "";
-        metaRow.appendChild(path);
-      }
     } else {
       var untaggedChip = document.createElement("span");
       untaggedChip.className = "note-type-chip";
@@ -1036,10 +817,7 @@
     el.previewContent.appendChild(body);
     var shareHintNode = buildShareHint();
     el.previewContent.appendChild(shareHintNode);
-
-    if (item._fromInbox) {
-      el.previewContent.appendChild(buildInboxActions(item, { filename: filename, body: body, shareHint: shareHintNode }));
-    }
+    el.previewContent.appendChild(buildInboxActions(item, { filename: filename, body: body, shareHint: shareHintNode }));
 
     function setBody(node) {
       if (mySeq !== previewRequestSeq) return;
@@ -1054,59 +832,7 @@
       setBody(p);
     }
 
-    if (item._fromInbox) {
-      renderInboxPreviewBody(item, setBody, setPlaceholder);
-      return;
-    }
-
-    if (isLinkNote(item)) {
-      getGraphToken().then(function (token) {
-        return /\.lnk$/i.test(item.filename) ? resolveLnkUrl(item.driveItemId, token) : fetchUrlShortcutTarget(item.driveItemId, token);
-      }).then(function (targetUrl) {
-        item._resolvedTargetUrl = targetUrl;
-        if (!targetUrl) { setPlaceholder("No preview available for this file type."); return; }
-        var slot = document.createElement("div");
-        slot.className = "preview-site-slot";
-        var hostname;
-        try { hostname = new URL(targetUrl).hostname; } catch (e) { hostname = targetUrl; }
-        var favicon = document.createElement("img");
-        favicon.className = "preview-favicon";
-        favicon.alt = "";
-        favicon.src = "https://www.google.com/s2/favicons?sz=64&domain=" + encodeURIComponent(hostname);
-        slot.appendChild(favicon);
-        var host = document.createElement("div");
-        host.className = "preview-site-host";
-        host.textContent = hostname;
-        slot.appendChild(host);
-        setBody(slot);
-      }).catch(function () { setPlaceholder("Couldn't load a preview for this link."); });
-      return;
-    }
-
-    if (/\.(md|txt)$/i.test(item.filename)) {
-      getGraphToken().then(function (token) { return fetchFileText(item.driveItemId, token); })
-        .then(function (text) {
-          var pre = document.createElement("pre");
-          pre.className = "preview-text";
-          pre.textContent = text;
-          setBody(pre);
-        }).catch(function () { setPlaceholder("Couldn't load a preview for this file."); });
-      return;
-    }
-
-    getGraphToken().then(function (token) {
-      var url = DRIVE_BASE_URL + "/items/" + item.driveItemId + "/thumbnails";
-      return graphFetch(url, token);
-    }).then(function (result) {
-      var set = result.value && result.value[0];
-      var img = set && (set.large || set.medium || set.small);
-      if (!img) { setPlaceholder("No preview available for this file type."); return; }
-      var imgEl = document.createElement("img");
-      imgEl.className = "preview-thumb";
-      imgEl.src = img.url;
-      imgEl.alt = item.filename;
-      setBody(imgEl);
-    }).catch(function () { setPlaceholder("Couldn't load a preview for this file."); });
+    renderInboxPreviewBody(item, setBody, setPlaceholder);
   }
 
   function fetchInboxBlobBase64(entry) {
@@ -1191,22 +917,19 @@
       });
   }
 
-  // Builds the Edit/Delete action row and the in-place edit form for an
-  // inbox entry's preview screen, per guidance/edit_delete_design.md. Only
-  // ever called for a _fromInbox item — real OneDrive notes get no
-  // Edit/Delete UI at all, since PaperFind never writes to PaperTrail's data.
-  // viewNodes are the read-only preview elements (title, body, share hint)
-  // that hide while the edit form is open and reappear on Cancel.
+  // Builds the Edit/Delete action row and the in-place edit form for a
+  // note's preview screen, per guidance/edit_delete_design.md. viewNodes are
+  // the read-only preview elements (title, body, share hint) that hide
+  // while the edit form is open and reappear on Cancel.
   function buildInboxActions(entry, viewNodes) {
     var wrap = document.createElement("div");
 
     var actionsRow = document.createElement("div");
     actionsRow.className = "preview-actions";
 
-    // Edit shows for every inbox entry, filed or not (corrected 2026-08-10
-    // after live testing — tapping the preview body is already the share
-    // action, so there's no other way into edit mode without a dedicated
-    // button, regardless of whether the note has been filed yet).
+    // Edit shows for every note, filed or not (corrected 2026-08-10 after
+    // live testing — tapping the preview body is already the share action,
+    // so there's no other way into edit mode without a dedicated button).
     var editBtn = document.createElement("button");
     editBtn.type = "button";
     editBtn.className = "action-btn";
@@ -1354,42 +1077,17 @@
   // =========================================================================
   // Tap-to-share — the whole preview body is one tap target. Shares the
   // real file bytes (so the iOS share sheet offers Save/Print/Copy, not
-  // just "copy link"); falls back to opening the source directly if the
-  // Web Share API isn't available or the share fails for a reason other
-  // than the user simply cancelling.
+  // just "copy link"); falls back to a plain error if the Web Share API
+  // isn't available or the share fails for a reason other than the user
+  // simply cancelling.
   // =========================================================================
   function handlePreviewTap(item) {
-    var task;
-    if (item._fromInbox) {
-      task = shareInboxEntry(item);
-    } else if (isLinkNote(item)) {
-      task = shareLinkNote(item);
-    } else {
-      task = shareRealNoteFile(item);
-    }
-    task.catch(function (err) {
+    shareInboxEntry(item).catch(function (err) {
       if (err && err.name === "AbortError") return; // user cancelled the share sheet
-      var fallbackUrl = item._fromInbox ? null : (item._resolvedTargetUrl || item.webUrl);
-      if (fallbackUrl) window.open(fallbackUrl, "_blank", "noopener");
-      else showStatus("Couldn't share this item.", "error");
+      showStatus("Couldn't share this item.", "error");
     });
   }
 
-  function shareRealNoteFile(note) {
-    return getGraphToken().then(function (token) { return fetchFileArrayBuffer(note.driveItemId, token); })
-      .then(function (buf) {
-        var file = new File([buf], note.filename, { type: mimeForFilename(note.filename) });
-        if (navigator.canShare && navigator.canShare({ files: [file] })) {
-          return navigator.share({ files: [file], title: note.filename });
-        }
-        throw new Error("share-files-unsupported");
-      });
-  }
-  function shareLinkNote(note) {
-    var url = note._resolvedTargetUrl || note.webUrl;
-    if (navigator.share) return navigator.share({ url: url, title: note.filename });
-    return Promise.reject(new Error("share-unsupported"));
-  }
   function shareInboxEntry(entry) {
     if (entry.type === "text") {
       var textPromise = entry.textContent != null ? Promise.resolve(entry.textContent) : fetchInboxBlobText(entry);
@@ -1409,12 +1107,8 @@
   }
 
   // =========================================================================
-  // Writes — edit/delete for inbox entries (PaperFind's first write
-  // capability, per the 2026-08-10 edit/delete design pass, guidance/
-  // edit_delete_design.md). Scoped entirely to papernote-data/inbox.json and
-  // its blobs — PaperFind never writes to PaperTrail's OneDrive-backed data,
-  // so real notesData items get no Edit/Delete UI at all (see
-  // buildInboxActions below, only ever called for a _fromInbox item).
+  // Writes — edit/delete for notes (PaperFind's first write capability, per
+  // the 2026-08-10 edit/delete design pass, guidance/edit_delete_design.md).
   // Mirrors PaperNote's and PaperFile's own commit-with-retry-on-ref-conflict
   // shape (read the current tree, mutate, build a new tree/commit, retry the
   // ref update up to MAX_COMMIT_ATTEMPTS times on conflict) rather than
@@ -1480,8 +1174,8 @@
   }
   // Fetches just the current blob sha at an entry's existing blobPath (via
   // the Contents API's metadata, not the blob content itself) — used to move
-  // an unchanged photo/document/text blob to a renamed path without
-  // re-uploading its bytes.
+  // an unchanged photo/text blob to a renamed path without re-uploading its
+  // bytes.
   function fetchInboxBlobSha(entry) {
     var headers = { Authorization: "token " + localConfig.gh.pat };
     var contentsUrl = "https://api.github.com/repos/" + INBOX_REPO_OWNER + "/" + INBOX_REPO_NAME + "/contents/" + entry.blobPath;
@@ -1537,13 +1231,13 @@
       });
   }
 
-  // Edits a text note's title and/or body, or a photo/document's title only.
+  // Edits a text note's title and/or body, or a photo's title only.
   // newBodyTextIfChanged is undefined whenever the body wasn't touched (every
-  // photo/document call, and a text-note call where only the title changed) —
-  // in that case an existing blob's bytes are moved to the renamed path
-  // rather than re-uploaded; a legacy inline text entry (no blobPath yet)
-  // with a title-only edit just updates its filename, no blob involved at
-  // all. Resolves with a patch object the caller applies to the local
+  // photo call, and a text-note call where only the title changed) — in that
+  // case an existing blob's bytes are moved to the renamed path rather than
+  // re-uploaded; a legacy inline text entry (no blobPath yet) with a
+  // title-only edit just updates its filename, no blob involved at all.
+  // Resolves with a patch object the caller applies to the local
   // inboxEntries copy, since the GitHub-side mutation happens on a freshly
   // re-fetched tree, not the same JS object reference.
   function attemptEditEntry(entryId, newFilename, newBodyTextIfChanged) {
@@ -1615,7 +1309,6 @@
   // Settings
   // =========================================================================
   function openSettings() {
-    el.azureClientId.value = localConfig.azureClientId || "";
     el.ghPat.value = (localConfig.gh && localConfig.gh.pat) || "";
     openSheet("settingsSheet");
   }
@@ -1652,10 +1345,8 @@
     el.settingsBtn.addEventListener("click", openSettings);
     el.settingsSheetClose.addEventListener("click", function () { closeSheet("settingsSheet"); });
     el.settingsSaveBtn.addEventListener("click", function () {
-      var clientId = el.azureClientId.value.trim();
       var pat = el.ghPat.value.trim();
       if (!pat) { showStatus("A GitHub token is required.", "error"); return; }
-      localConfig.azureClientId = clientId;
       localConfig.gh = { pat: pat };
       saveLocalConfig();
       closeSheet("settingsSheet");
