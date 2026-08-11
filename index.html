@@ -1203,16 +1203,15 @@
     var actionsRow = document.createElement("div");
     actionsRow.className = "preview-actions";
 
-    // Edit is filed-notes-only (2026-08-10 design decision) — an unfiled
-    // note's content still isn't editable in PaperFind, only deletable.
-    var editBtn = null;
-    if (entry.tag) {
-      editBtn = document.createElement("button");
-      editBtn.type = "button";
-      editBtn.className = "action-btn";
-      editBtn.innerHTML = EDIT_ICON + " Edit";
-      actionsRow.appendChild(editBtn);
-    }
+    // Edit shows for every inbox entry, filed or not (corrected 2026-08-10
+    // after live testing — tapping the preview body is already the share
+    // action, so there's no other way into edit mode without a dedicated
+    // button, regardless of whether the note has been filed yet).
+    var editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "action-btn";
+    editBtn.innerHTML = EDIT_ICON + " Edit";
+    actionsRow.appendChild(editBtn);
 
     var deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
@@ -1310,7 +1309,7 @@
       viewNodes.shareHint.hidden = false;
     }
 
-    if (editBtn) editBtn.addEventListener("click", enterEditMode);
+    editBtn.addEventListener("click", enterEditMode);
     cancelBtn.addEventListener("click", exitEditMode);
 
     saveBtn.addEventListener("click", function () {
